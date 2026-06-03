@@ -62,18 +62,21 @@ async function startServer() {
         rooms.set(normalizedRoomId, room);
       }
 
-      // Check if position is occupied by active human player
-      const activeOccupantIndex = room.players.findIndex(p => p.position === playerPosition && !p.isAI);
-      if (activeOccupantIndex !== -1) {
-        // Disconnect previous socket or replace
-        room.players.splice(activeOccupantIndex, 1);
+      // If position is already occupied by an active human player, auto-assign a vacant seat (0, 1, 2, 3)
+      const isPositionTaken = room.players.some(p => p.position === playerPosition && !p.isAI);
+      if (isPositionTaken) {
+        let vacantPos = playerPosition;
+        for (let i = 0; i < 4; i++) {
+          if (!room.players.some(p => p.position === i && !p.isAI)) {
+            vacantPos = i;
+            break;
+          }
+        }
+        playerPosition = vacantPos;
       }
 
-      // Remove any AI occupying this seat
-      const aiOccupantIndex = room.players.findIndex(p => p.position === playerPosition && p.isAI);
-      if (aiOccupantIndex !== -1) {
-        room.players.splice(aiOccupantIndex, 1);
-      }
+      // Remove any AI occupant occupying this seat
+      room.players = room.players.filter(p => !(p.position === playerPosition && p.isAI));
 
       // Check if host is already elected
       const hasHost = room.players.some(p => p.isHost && !p.isAI);

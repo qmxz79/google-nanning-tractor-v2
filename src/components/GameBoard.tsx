@@ -85,17 +85,39 @@ export const GameBoard: React.FC = () => {
     };
   }, [socket, multiplayerMode]);
 
-  const handleJoinMultiplayerSuccess = (socketInstance: any, code: string, position: number, name: string, creator: boolean) => {
+  const handleJoinMultiplayerSuccess = (
+    socketInstance: any, 
+    code: string, 
+    position: number, 
+    name: string, 
+    creator: boolean,
+    initialPlayers?: any[],
+    initialState?: any
+  ) => {
     setSocket(socketInstance);
     setRoomId(code);
     setLocalPlayerIndex(position as PlayerPosition);
     setIsHost(creator);
     setMultiplayerMode('online');
     
+    if (initialPlayers) {
+      setLobbyPlayers(initialPlayers);
+    }
+    
+    if (initialState) {
+      setGameState(initialState);
+      if (initialState.phase === 'DEALING') {
+        setIsDealing(true);
+      } else {
+        setIsDealing(false);
+      }
+    }
+    
     // Auto sync initial settings if host
     if (creator) {
       const freshState = engine.initGameState(position as PlayerPosition, '3', '3');
       socketInstance.emit("sync_game_state", { roomId: code, gameState: freshState });
+      setGameState(freshState);
     }
   };
 
@@ -107,13 +129,13 @@ export const GameBoard: React.FC = () => {
     return ((me + 3) % 4) as PlayerPosition;
   };
 
-  const getPlayerName = (pos: PlayerPosition): string => {
+  const getPlayerName = useCallback((pos: PlayerPosition): string => {
     if (multiplayerMode === 'online') {
       const p = lobbyPlayers.find(pl => pl.position === pos);
       if (p) return p.name;
     }
     return pos === 0 ? "我 (南家)" : pos === 1 ? "东家" : pos === 2 ? "北家" : "西家";
-  };
+  }, [multiplayerMode, lobbyPlayers]);
 
   const startNewRound = useCallback((bankerPos: PlayerPosition, l0: Rank, l1: Rank) => {
     updateStateAndSync(prev => {
@@ -657,8 +679,21 @@ export const GameBoard: React.FC = () => {
   // AI Bidding Simulation during DEALING
   useEffect(() => {
     if (gameState.phase === 'DEALING') {
+      const shouldRunAIBid = multiplayerMode === 'offline' || (multiplayerMode === 'online' && isHost);
+      if (!shouldRunAIBid) return;
+
       const timer = setTimeout(() => {
-        const aiPos = [1, 2, 3][Math.floor(Math.random() * 3)] as PlayerPosition;
+        const aiPositions: PlayerPosition[] = [];
+        if (multiplayerMode === 'offline') {
+          aiPositions.push(1, 2, 3);
+        } else {
+          lobbyPlayers.forEach(p => {
+            if (p.isAI) aiPositions.push(p.position as PlayerPosition);
+          });
+        }
+
+        if (aiPositions.length === 0) return;
+        const aiPos = aiPositions[Math.floor(Math.random() * aiPositions.length)];
         const hand = gameState.hands[aiPos];
         if (!hand) return;
         const suits: CardType['suit'][] = ['spade', 'heart', 'club', 'diamond'];
@@ -670,14 +705,14 @@ export const GameBoard: React.FC = () => {
                if (!gameState.currentBid || cCount > gameState.currentBid.count) {
                  const suitName = suit === 'spade' ? '黑桃' : suit === 'heart' ? '红桃' : suit === 'club' ? '梅花' : '方块';
                  
-                 setGameState(prev => ({
+                 updateStateAndSync(prev => ({
                    ...prev,
                    currentBid: { player: aiPos, suit, count: cCount },
                    trumpSuit: suit,
                    bankerPos: prev.isFirstRound ? aiPos : prev.bankerPos,
                    message: prev.settings.isPublicBid 
-                     ? `${aiPos === 1 ? '东家' : aiPos === 2 ? '北家' : '西家'} 叫牌: ${cCount}张${suitName}`
-                     : `${aiPos === 1 ? '东家' : aiPos === 2 ? '北家' : '西家'} 叫牌: ${cCount}张`
+                     ? `${getPlayerName(aiPos)} 叫牌: ${cCount}张${suitName}`
+                     : `${getPlayerName(aiPos)} 叫牌: ${cCount}张`
                  }));
                  return;
                }
@@ -687,7 +722,7 @@ export const GameBoard: React.FC = () => {
       }, 500 + Math.random() * 1500);
       return () => clearTimeout(timer);
     }
-  }, [gameState.phase, gameState.dealingCount, gameState.currentBid]);
+  }, [gameState.phase, gameState.dealingCount, gameState.currentBid, multiplayerMode, isHost, lobbyPlayers, updateStateAndSync, getPlayerName]);
 
   const handlePlay = (cards: CardType[]) => {
     const me = multiplayerMode === 'online' ? localPlayerIndex : 0;
@@ -973,7 +1008,7 @@ export const GameBoard: React.FC = () => {
                     })}
 
                     {/* Finish Bidding manually during BIDDING phase - Sleek non-obtrusive button */}
-                    {gameState.phase === 'BIDDING' && (
+                    {gameState.phase === 'BIDDING' && (multiplayerMode === 'offline' || isHost) && (
                       <button
                         onClick={finishBidding}
                         className="bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-black font-extrabold px-3.5 py-1.5 rounded-lg text-xs tracking-wide hover:scale-102 active:scale-98 transition-all shadow-md pointer-events-auto cursor-pointer"
@@ -992,7 +1027,7 @@ export const GameBoard: React.FC = () => {
                      <span>当前竞标:</span>
                      <div className="flex items-center gap-1">
                         <span className="bg-gold text-black px-1.5 rounded leading-none py-0.5 uppercase">
-                          {gameState.currentBid.player === 0 ? "我" : gameState.currentBid.player === 1 ? "东" : gameState.currentBid.player === 2 ? "北" : "西"}
+                          {gameState.currentBid.player === me ? "我" : getPlayerName(gameState.currentBid.player)}
                          </span>
                          <span>{gameState.currentBid.count}张</span>
                          {gameState.settings.isPublicBid && (
@@ -1125,82 +1160,82 @@ export const GameBoard: React.FC = () => {
 
             {/* Played Cards Area */}
             <div className="absolute inset-0 z-[55] pointer-events-none flex flex-col items-center justify-center">
-              {/* Central Bounded Table Container for Played Cards - guarantees NO overlap/collision between players */}
-              <div className="relative w-56 h-56 sm:w-80 sm:h-80 flex items-center justify-center pointer-events-none">
-                {/* "本圈出牌" Header exactly like in user's layout - repositioned non-blockingly */}
-                {gameState.currentTrick && Object.values(gameState.currentTrick.cards).some((cards: any) => cards && cards.length > 0) && (
-                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[5] flex flex-col items-center pointer-events-none bg-[#052d15]/85 backdrop-blur-sm px-3 py-1 rounded-full border border-[#1b8c4d]/30 shadow-md">
-                    <span className="text-[#86e2a9] text-[9.5px] font-black tracking-[0.18em] uppercase">
-                      本圈出牌
-                    </span>
-                  </div>
-                )}
+               {/* Central Bounded Table Container for Played Cards - expanded substantially to prevent any overlap/collision between players */}
+               <div className="relative w-64 h-64 sm:w-[450px] sm:h-[260px] md:w-[520px] md:h-[280px] lg:w-[560px] lg:h-[310px] flex items-center justify-center pointer-events-none">
+                 {/* "本圈出牌" Header exactly like in user's layout - repositioned non-blockingly */}
+                 {gameState.currentTrick && Object.values(gameState.currentTrick.cards).some((cards: any) => cards && cards.length > 0) && (
+                   <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[5] flex flex-col items-center pointer-events-none bg-[#052d15]/90 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-[#1b8c4d]/40 shadow-xl">
+                     <span className="text-[#86e2a9] text-[9.5px] font-black tracking-[0.18em] uppercase">
+                       本圈出牌
+                     </span>
+                   </div>
+                 )}
 
-                <AnimatePresence>
-                  {gameState.currentTrick && (
-                    Object.keys(gameState.currentTrick.cards).map(posStr => {
-                      const pos = parseInt(posStr) as PlayerPosition;
-                      const cards = gameState.currentTrick!.cards[pos];
-                      if (!cards || cards.length === 0) return null;
+                 <AnimatePresence>
+                   {gameState.currentTrick && (
+                     Object.keys(gameState.currentTrick.cards).map(posStr => {
+                       const pos = parseInt(posStr) as PlayerPosition;
+                       const cards = gameState.currentTrick!.cards[pos];
+                       if (!cards || cards.length === 0) return null;
 
-                      const visualPos = pos === me ? 0 : pos === rightSeat ? 1 : pos === topSeat ? 2 : 3;
+                       const visualPos = pos === me ? 0 : pos === rightSeat ? 1 : pos === topSeat ? 2 : 3;
 
-                      const posConfig: Record<number, { container: string, animate: any }> = {
-                        0: { container: "absolute bottom-1 sm:bottom-2 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 z-10", animate: { y: 0, opacity: 1, scale: 1 } },
-                        1: { container: "absolute right-1 sm:right-2 top-1/2 -translate-y-1/2 flex flex-col items-center gap-1 z-10", animate: { x: 0, opacity: 1, scale: 1 } },
-                        2: { container: "absolute top-1 sm:top-2 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 z-10", animate: { y: 0, opacity: 1, scale: 1 } },
-                        3: { container: "absolute left-1 sm:left-2 top-1/2 -translate-y-1/2 flex flex-col items-center gap-1 z-10", animate: { x: 0, opacity: 1, scale: 1 } }
-                      };
+                       const posConfig: Record<number, { container: string, animate: any }> = {
+                         0: { container: "absolute bottom-0 sm:bottom-1 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 z-10", animate: { y: 0, opacity: 1, scale: 1 } },
+                         1: { container: "absolute right-0 sm:right-1 top-1/2 -translate-y-1/2 flex flex-col items-center gap-1 z-10", animate: { x: 0, opacity: 1, scale: 1 } },
+                         2: { container: "absolute top-0 sm:top-1 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 z-10", animate: { y: 0, opacity: 1, scale: 1 } },
+                         3: { container: "absolute left-0 sm:left-1 top-1/2 -translate-y-1/2 flex flex-col items-center gap-1 z-10", animate: { x: 0, opacity: 1, scale: 1 } }
+                       };
 
-                      const label = getPlayerName(pos);
-                      const isLeader = gameState.currentTrick?.leader === pos;
+                       const label = getPlayerName(pos);
+                       const isLeader = gameState.currentTrick?.leader === pos;
 
-                      return (
-                        <motion.div 
-                          key={`trick-${pos}`}
-                          initial={{ 
-                            opacity: 0, 
-                            scale: 0.8, 
-                            y: visualPos === 0 ? 50 : visualPos === 2 ? -50 : 0, 
-                            x: visualPos === 1 ? 50 : visualPos === 3 ? -50 : 0 
-                          }}
-                          animate={posConfig[visualPos].animate}
-                          exit={{ opacity: 0, scale: 1.1, filter: "brightness(2)" }}
-                          className={cn("absolute flex flex-col items-center gap-1.5 p-1 bg-black/60 rounded-xl border border-white/10 backdrop-blur-md pointer-events-auto shadow-xl z-20", posConfig[visualPos].container)}
-                        >
-                          <div className="flex items-center gap-0.5 bg-black/85 px-2 py-0.5 rounded text-[8px] sm:text-[9px] font-black border border-white/10 uppercase">
-                            <span className={isLeader ? "text-gold" : "text-white/60"}>
-                              {label} {isLeader && "★"}
-                            </span>
-                          </div>
-                          <div className="flex items-center">
-                            {cards.filter(Boolean).map((c, i) => (
-                               <div 
-                                 key={c?.id || `${pos}-${i}`} 
-                                 style={{ 
-                                   marginLeft: i === 0 ? 0 : 'var(--trick-card-ml)', 
-                                   zIndex: i 
-                                 }}
-                                 className="transition-all duration-150"
-                               >
-                                  <PlayingCard 
-                                    card={c} 
-                                    className="shadow-md border border-white/10 pointer-events-none transform-none" 
-                                    style={{ 
-                                      width: 'var(--trick-card-w)', 
-                                      height: 'var(--trick-card-h)' 
-                                    }} 
-                                    isTrump={NanningRules.isTrump(c, gameState.trumpSuit, gameState.trumpLevel)} 
-                                  />
-                                </div>
-                            ))}
-                          </div>
-                        </motion.div>
-                      );
-                    })
-                  )}
-                </AnimatePresence>
-              </div>
+                       return (
+                         <motion.div 
+                           key={`trick-${pos}`}
+                           initial={{ 
+                             opacity: 0, 
+                             scale: 0.8, 
+                             y: visualPos === 0 ? 50 : visualPos === 2 ? -50 : 0, 
+                             x: visualPos === 1 ? 50 : visualPos === 3 ? -50 : 0 
+                           }}
+                           animate={posConfig[visualPos].animate}
+                           exit={{ opacity: 0, scale: 1.1, filter: "brightness(2)" }}
+                           className={cn("absolute flex flex-col items-center gap-1.5 p-1.5 bg-black/75 rounded-2xl border border-white/10 backdrop-blur-md pointer-events-auto shadow-2xl z-20", posConfig[visualPos].container)}
+                         >
+                           <div className="flex items-center gap-0.5 bg-black/85 px-2 py-0.5 rounded text-[8px] sm:text-[9px] font-black border border-white/10 uppercase">
+                             <span className={isLeader ? "text-gold" : "text-white/60"}>
+                               {label} {isLeader && "★"}
+                             </span>
+                           </div>
+                           <div className="flex items-center justify-center flex-wrap gap-y-1 max-w-[140px] sm:max-w-[210px] md:max-w-[250px]">
+                             {cards.filter(Boolean).map((c, i) => (
+                                <div 
+                                  key={c?.id || `${pos}-${i}`} 
+                                  style={{ 
+                                    marginLeft: i === 0 ? 0 : 'var(--trick-card-ml)', 
+                                    zIndex: i 
+                                  }}
+                                  className="transition-all duration-150"
+                                >
+                                   <PlayingCard 
+                                     card={c} 
+                                     className="shadow-md border border-white/10 pointer-events-none transform-none" 
+                                     style={{ 
+                                       width: 'var(--trick-card-w)', 
+                                       height: 'var(--trick-card-h)' 
+                                     }} 
+                                     isTrump={NanningRules.isTrump(c, gameState.trumpSuit, gameState.trumpLevel)} 
+                                   />
+                                 </div>
+                             ))}
+                           </div>
+                         </motion.div>
+                       );
+                     })
+                   )}
+                 </AnimatePresence>
+               </div>
 
               {/* Collect cards & proceed button - displayed compactly in the bottom-left corner above Player 0 to stay completely out of the way */}
               {gameState.currentTrick && gameState.currentPlayer === -1 && (
@@ -1387,13 +1422,19 @@ export const GameBoard: React.FC = () => {
             {/* Action CTAs */}
             <div className="w-full flex flex-col gap-4">
               <motion.button
-                whileHover={{ scale: 1.01 }}
-                whileTap={{ scale: 0.99 }}
-                onClick={startDeal}
-                className="w-full py-4 bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-black font-black text-base rounded-2xl tracking-widest shadow-[0_12px_40px_rgba(245,158,11,0.25)] transition-all flex items-center justify-center gap-2 cursor-pointer border border-amber-300"
+                whileHover={multiplayerMode === 'online' && !isHost ? {} : { scale: 1.01 }}
+                whileTap={multiplayerMode === 'online' && !isHost ? {} : { scale: 0.99 }}
+                onClick={multiplayerMode === 'online' && !isHost ? undefined : startDeal}
+                disabled={multiplayerMode === 'online' && !isHost}
+                className={cn(
+                  "w-full py-4 font-black text-base rounded-2xl tracking-widest transition-all flex items-center justify-center gap-2 border",
+                  multiplayerMode === 'online' && !isHost
+                    ? "bg-zinc-800 text-zinc-500 border-zinc-700 cursor-not-allowed"
+                    : "bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-black border-amber-300 cursor-pointer shadow-[0_12px_40px_rgba(245,158,11,0.25)]"
+                )}
               >
-                <span>⚔️</span>
-                <span>立即进入游戏</span>
+                <span>{multiplayerMode === 'online' && !isHost ? "⏳" : "⚔️"}</span>
+                <span>{multiplayerMode === 'online' && !isHost ? "等待房主开始发牌..." : "立即进入游戏"}</span>
               </motion.button>
 
               <motion.button

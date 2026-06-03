@@ -46,20 +46,20 @@ html, body, #root {
 :root {
   --trick-card-w: 36px;
   --trick-card-h: 51px;
-  --trick-card-ml: -14px;
+  --trick-card-ml: -6px;
 }
 @media (min-width: 640px) {
   :root {
     --trick-card-w: 48px;
     --trick-card-h: 67px;
-    --trick-card-ml: -16px;
+    --trick-card-ml: -8px;
   }
 }
 @media (min-width: 1024px) {
   :root {
     --trick-card-w: 52px;
     --trick-card-h: 73px;
-    --trick-card-ml: -18px;
+    --trick-card-ml: -10px;
   }
 }
 

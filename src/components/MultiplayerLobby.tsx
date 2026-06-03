@@ -19,7 +19,15 @@ interface ChatMessage {
 }
 
 interface MultiplayerLobbyProps {
-  onJoinSuccess: (socket: Socket, roomId: string, position: number, name: string, isHost: boolean) => void;
+  onJoinSuccess: (
+    socket: Socket, 
+    roomId: string, 
+    position: number, 
+    name: string, 
+    isHost: boolean,
+    initialPlayers?: PlayerInfo[],
+    initialState?: any
+  ) => void;
   onSelectOffline: () => void;
 }
 
@@ -37,6 +45,35 @@ export const MultiplayerLobby: React.FC<MultiplayerLobbyProps> = ({ onJoinSucces
   const [chatInput, setChatInput] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [isConnecting, setIsConnecting] = useState(false);
+
+  // Sync state refs to prevent stale closures inside socket event handlers
+  const roomPlayersRef = React.useRef<PlayerInfo[]>([]);
+  const playerNameRef = React.useRef<string>(playerName);
+  const selectedPositionRef = React.useRef<number>(selectedPosition);
+
+  useEffect(() => {
+    roomPlayersRef.current = roomPlayers;
+  }, [roomPlayers]);
+
+  useEffect(() => {
+    playerNameRef.current = playerName;
+  }, [playerName]);
+
+  useEffect(() => {
+    selectedPositionRef.current = selectedPosition;
+  }, [selectedPosition]);
+
+  // Cleanup listeners on unmount (does not disconnect socket to preserve it for GameBoard)
+  useEffect(() => {
+    return () => {
+      if (socket) {
+        socket.off('room_players_updated');
+        socket.off('receive_chat_message');
+        socket.off('game_state_updated');
+        socket.off('connect_error');
+      }
+    };
+  }, [socket]);
 
   // Auto-fill roomId from URL if present
   useEffect(() => {
@@ -99,6 +136,27 @@ export const MultiplayerLobby: React.FC<MultiplayerLobbyProps> = ({ onJoinSucces
 
     socketInstance.on('room_players_updated', (players: PlayerInfo[]) => {
       setRoomPlayers(players);
+      const myP = players.find(p => p.socketId === socketInstance.id);
+      if (myP && myP.position !== selectedPositionRef.current) {
+        setSelectedPosition(myP.position);
+      }
+    });
+
+    socketInstance.on('game_state_updated', (incomingState: any) => {
+      if (incomingState) {
+        // Automatically transition guest to game board!
+        const myP = roomPlayersRef.current.find(p => p.socketId === socketInstance.id);
+        const myPos = myP ? myP.position : selectedPositionRef.current;
+        onJoinSuccess(
+          socketInstance, 
+          targetRoomId, 
+          myPos, 
+          playerNameRef.current, 
+          myP?.isHost || false, 
+          roomPlayersRef.current, 
+          incomingState
+        );
+      }
     });
 
     socketInstance.on('receive_chat_message', (msg: ChatMessage) => {
@@ -178,10 +236,36 @@ export const MultiplayerLobby: React.FC<MultiplayerLobbyProps> = ({ onJoinSucces
 
   const handleStartGame = () => {
     if (!socket) return;
-    // Notify room manager to start dealing phase
-    // We will do this by telling our parent component, which will emit 'sync_game_state' to start dealing!
+    
+    // Auto populate empty seats with AI players to avoid game hanging
+    const occupiedSeats = roomPlayers.map(p => p.position);
+    let addedCount = 0;
+    for (let pos = 0; pos < 4; pos++) {
+      if (!occupiedSeats.includes(pos)) {
+        const aiNames = [
+          ["南邪", "南蛮王"][pos % 2],
+          ["东邪", "东方不败"][pos % 2],
+          ["北丐", "北帝"][pos % 2],
+          ["西毒", "西门吹雪"][pos % 2]
+        ];
+        socket.emit('add_ai_player', {
+          roomId,
+          position: pos,
+          name: aiNames[pos] || `电脑 AI`
+        });
+        addedCount++;
+      }
+    }
+
     const myPosInLobby = localPlayer?.position ?? selectedPosition;
-    onJoinSuccess(socket, roomId, myPosInLobby, playerName, isLocalHost);
+    if (addedCount > 0) {
+      // Small timeout to allow socket events to hit server before transitioning
+      setTimeout(() => {
+        onJoinSuccess(socket, roomId, myPosInLobby, playerName, isLocalHost, roomPlayers);
+      }, 100);
+    } else {
+      onJoinSuccess(socket, roomId, myPosInLobby, playerName, isLocalHost, roomPlayers);
+    }
   };
 
   const handleBackToSelect = () => {
