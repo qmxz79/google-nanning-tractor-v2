@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Card as CardType, GameState, PlayerPosition, Trick, Rank, TeamState } from '../types';
 import { Hand } from './Hand';
 import { PlayingCard } from './PlayingCard';
@@ -7,8 +7,18 @@ import { GamePhase } from '../types';
 import { NanningRules } from '../rules/nanningRules';
 import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
+import { MultiplayerLobby } from './MultiplayerLobby';
 
 export const GameBoard: React.FC = () => {
+  // Online Multiplayer State
+  const [multiplayerMode, setMultiplayerMode] = useState<'offline' | 'online' | null>(null);
+  const [socket, setSocket] = useState<any>(null);
+  const [roomId, setRoomId] = useState('');
+  const [localPlayerIndex, setLocalPlayerIndex] = useState<PlayerPosition>(0);
+  const [lobbyPlayers, setLobbyPlayers] = useState<any[]>([]);
+  const [isHost, setIsHost] = useState(false);
+  const isUpdatingFromNetwork = useRef(false);
+
   const [gameState, setGameState] = useState<GameState>(engine.initGameState(0, '3', '3'));
   const [isDealing, setIsDealing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -17,14 +27,118 @@ export const GameBoard: React.FC = () => {
   const [showRulesModal, setShowRulesModal] = useState(false);
   const [isLastTrickModalOpen, setIsLastTrickModalOpen] = useState(false);
 
-  const startNewRound = useCallback((bankerPos: PlayerPosition, l0: Rank, l1: Rank) => {
+  // Wrapper helper to sync state changes to rooms
+  const updateStateAndSync = useCallback((updater: any) => {
     setGameState(prev => {
+      const nextState = typeof updater === 'function' ? updater(prev) : updater;
+      if (multiplayerMode === 'online' && socket && !isUpdatingFromNetwork.current) {
+        socket.emit("sync_game_state", { roomId, gameState: nextState });
+      }
+      return nextState;
+    });
+  }, [multiplayerMode, socket, roomId]);
+
+  // Handle socket.io updates and reconnection listeners
+  useEffect(() => {
+    if (!socket || multiplayerMode !== 'online') return;
+
+    socket.on('room_players_updated', (players: any[]) => {
+      setLobbyPlayers(players);
+      const myP = players.find(p => p.socketId === socket.id);
+      if (myP) {
+        setLocalPlayerIndex(myP.position as PlayerPosition);
+        setIsHost(myP.isHost);
+      }
+    });
+
+    socket.on('game_state_updated', (incomingState: any) => {
+      isUpdatingFromNetwork.current = true;
+      setGameState(incomingState);
+      // Automatically reset if phase changed to DEALING or BOTTOM_REPLACEMENT etc.
+      if (incomingState.phase === 'DEALING') {
+        setIsDealing(true);
+      } else {
+        setIsDealing(false);
+      }
+      // Also sync settings views
+      setShowSettings(false);
+      // Reset the flag synchronously in microtask or after render
+      setTimeout(() => {
+        isUpdatingFromNetwork.current = false;
+      }, 50);
+    });
+
+    socket.on('game_restarted', () => {
+      isUpdatingFromNetwork.current = true;
+      setGameState(engine.initGameState(0, '3', '3'));
+      setIsDealing(false);
+      setShowSettings(false);
+      setTimeout(() => {
+        isUpdatingFromNetwork.current = false;
+      }, 50);
+    });
+
+    return () => {
+      socket.off('room_players_updated');
+      socket.off('game_state_updated');
+      socket.off('game_restarted');
+    };
+  }, [socket, multiplayerMode]);
+
+  const handleJoinMultiplayerSuccess = (socketInstance: any, code: string, position: number, name: string, creator: boolean) => {
+    setSocket(socketInstance);
+    setRoomId(code);
+    setLocalPlayerIndex(position as PlayerPosition);
+    setIsHost(creator);
+    setMultiplayerMode('online');
+    
+    // Auto sync initial settings if host
+    if (creator) {
+      const freshState = engine.initGameState(position as PlayerPosition, '3', '3');
+      socketInstance.emit("sync_game_state", { roomId: code, gameState: freshState });
+    }
+  };
+
+  const getPlayerAtSeat = (seat: 'bottom' | 'right' | 'top' | 'left'): PlayerPosition => {
+    const me = multiplayerMode === 'online' ? localPlayerIndex : 0;
+    if (seat === 'bottom') return me;
+    if (seat === 'right') return ((me + 1) % 4) as PlayerPosition;
+    if (seat === 'top') return ((me + 2) % 4) as PlayerPosition;
+    return ((me + 3) % 4) as PlayerPosition;
+  };
+
+  const getPlayerName = (pos: PlayerPosition): string => {
+    if (multiplayerMode === 'online') {
+      const p = lobbyPlayers.find(pl => pl.position === pos);
+      if (p) return p.name;
+    }
+    return pos === 0 ? "我 (南家)" : pos === 1 ? "东家" : pos === 2 ? "北家" : "西家";
+  };
+
+  const startNewRound = useCallback((bankerPos: PlayerPosition, l0: Rank, l1: Rank) => {
+    updateStateAndSync(prev => {
       const initialState = engine.initGameState(bankerPos, l0, l1, prev.nextBankerOfTeam, false);
       return initialState;
     });
     setShowSettings(false);
     setIsDealing(false);
-  }, []);
+  }, [updateStateAndSync]);
+
+  const handleRestartEverything = useCallback(() => {
+    if (multiplayerMode === 'online' && socket) {
+      socket.emit("restart_game", { roomId });
+    } else {
+      updateStateAndSync(prev => {
+        const initialState = engine.initGameState(0, '3', '3', undefined, true);
+        return {
+          ...initialState,
+          settings: prev.settings
+        };
+      });
+      setShowSettings(true);
+      setIsDealing(false);
+    }
+  }, [updateStateAndSync, multiplayerMode, socket, roomId]);
 
   const startDeal = useCallback(() => {
     setIsDealing(true);
@@ -34,7 +148,7 @@ export const GameBoard: React.FC = () => {
     const fullDeck = engine.createDeck();
     const bottomCards = fullDeck.slice(fullDeck.length - currentBottomCardCount);
 
-    setGameState(prev => ({ 
+    updateStateAndSync(prev => ({ 
       ...prev, 
       phase: 'DEALING', 
       message: "正在发牌与叫牌...", 
@@ -50,7 +164,7 @@ export const GameBoard: React.FC = () => {
       if (currentIndex >= cardsToDealLimit) {
         clearInterval(intervalId);
         setIsDealing(false);
-        setGameState(prev => {
+        updateStateAndSync(prev => {
           const finalHands = { ...prev.hands };
           
           let nextPhase: GamePhase = 'BIDDING';
@@ -62,9 +176,10 @@ export const GameBoard: React.FC = () => {
               msg = "叫牌结束，游戏开始！请出牌。";
             } else {
               nextPhase = 'BOTTOM_REPLACEMENT';
-              msg = prev.bankerPos === 0 
+              const mePos = multiplayerMode === 'online' ? localPlayerIndex : 0;
+              msg = prev.bankerPos === mePos 
                 ? "叫牌结束，您是庄家，请选择8张弃置作为底牌" 
-                : `${prev.bankerPos === 1 ? '东家' : prev.bankerPos === 2 ? '北家' : '西家'}是庄家，正在精选底牌...`;
+                : `${getPlayerName(prev.bankerPos)}是庄家，正在精选底牌...`;
               finalHands[prev.bankerPos] = [...finalHands[prev.bankerPos], ...bottomCards];
             }
           }
@@ -90,7 +205,7 @@ export const GameBoard: React.FC = () => {
       const playerToReceive = (currentIndex % 4) as PlayerPosition;
       const nextDealingCount = currentIndex + 1;
 
-      setGameState(prev => {
+      updateStateAndSync(prev => {
         const newHands = { ...prev.hands };
         newHands[playerToReceive] = [...(newHands[playerToReceive] || []), cardToDeal];
         return { 
@@ -104,7 +219,7 @@ export const GameBoard: React.FC = () => {
     }, 45);
 
     return () => clearInterval(intervalId);
-  }, [gameState.settings.bottomCardCount]);
+  }, [gameState.settings.bottomCardCount, updateStateAndSync, multiplayerMode, localPlayerIndex]);
 
   useEffect(() => {
     // startNewRound(0, '3', '3'); // Initial call
@@ -113,46 +228,59 @@ export const GameBoard: React.FC = () => {
   // AI Turn Handling
   useEffect(() => {
     if (isLastTrickModalOpen) return;
-    if (gameState.phase === 'PLAYING' && gameState.currentPlayer !== 0 && gameState.currentPlayer !== -1) {
-      const timer = setTimeout(() => {
-        const cp = gameState.currentPlayer;
-        const plays = playAICards(cp, gameState);
-        handlePlayInternal(cp, plays);
-      }, 800);
-      return () => clearTimeout(timer);
+    if (gameState.phase === 'PLAYING') {
+      const cp = gameState.currentPlayer;
+      if (cp !== -1) {
+        // Is cp an AI player in our room?
+        const isCPAnAI = multiplayerMode === 'online' && lobbyPlayers.some(p => p.position === cp && p.isAI);
+        const isOfflineAI = multiplayerMode === 'offline' && cp !== 0;
+
+        if (isOfflineAI || (multiplayerMode === 'online' && isCPAnAI && isHost)) {
+          const timer = setTimeout(() => {
+            const plays = playAICards(cp, gameState);
+            handlePlayInternal(cp, plays);
+          }, 800);
+          return () => clearTimeout(timer);
+        }
+      }
     }
-  }, [gameState.phase, gameState.currentPlayer, isLastTrickModalOpen]);
+  }, [gameState.phase, gameState.currentPlayer, isLastTrickModalOpen, isHost, lobbyPlayers, multiplayerMode, gameState]);
 
   // AI Bottom Card Replacement Handling
   useEffect(() => {
     if (isLastTrickModalOpen) return;
-    if (gameState.phase === 'BOTTOM_REPLACEMENT' && gameState.bankerPos !== 0) {
-      const timer = setTimeout(() => {
-        const banker = gameState.bankerPos;
-        const currentHand = gameState.hands[banker] || [];
-        
-        // Select the 8 worst cards to bury
-        const discarded = aiSelectBottomCards(currentHand, gameState.trumpSuit, gameState.trumpLevel, 8);
-        const newHand = currentHand.filter(c => !discarded.some(dc => dc.id === c.id));
-        
-        setGameState(prev => ({
-          ...prev,
-          hands: {
-            ...prev.hands,
-            [banker]: NanningRules.sortHand(newHand, prev.trumpSuit, prev.trumpLevel)
-          },
-          bottomCards: discarded,
-          phase: 'PLAYING',
-          currentPlayer: banker,
-          message: `${banker === 1 ? '东家' : banker === 2 ? '北家' : '西家'}已弃置8张底牌。游戏开始！`
-        }));
-      }, 1800);
-      return () => clearTimeout(timer);
+    if (gameState.phase === 'BOTTOM_REPLACEMENT') {
+      const banker = gameState.bankerPos;
+      const isBankerAnAI = multiplayerMode === 'online' && lobbyPlayers.some(p => p.position === banker && p.isAI);
+      const isOfflineAI = multiplayerMode === 'offline' && banker !== 0;
+
+      if (isOfflineAI || (multiplayerMode === 'online' && isBankerAnAI && isHost)) {
+        const timer = setTimeout(() => {
+          const currentHand = gameState.hands[banker] || [];
+          
+          // Select the 8 worst cards to bury
+          const discarded = aiSelectBottomCards(currentHand, gameState.trumpSuit, gameState.trumpLevel, 8);
+          const newHand = currentHand.filter(c => !discarded.some(dc => dc.id === c.id));
+          
+          updateStateAndSync(prev => ({
+            ...prev,
+            hands: {
+              ...prev.hands,
+              [banker]: NanningRules.sortHand(newHand, prev.trumpSuit, prev.trumpLevel)
+            },
+            bottomCards: discarded,
+            phase: 'PLAYING',
+            currentPlayer: banker,
+            message: `${getPlayerName(banker)}已弃置8张底牌。游戏开始！`
+          }));
+        }, 1800);
+        return () => clearTimeout(timer);
+      }
     }
-  }, [gameState.phase, gameState.bankerPos, isLastTrickModalOpen]);
+  }, [gameState.phase, gameState.bankerPos, isLastTrickModalOpen, isHost, lobbyPlayers, multiplayerMode, gameState, updateStateAndSync]);
 
   const handlePlayInternal = (player: PlayerPosition, cards: CardType[]) => {
-    setGameState(prev => {
+    updateStateAndSync(prev => {
       const currentHand = prev.hands[player] || [];
       const newHand = currentHand.filter(c => !cards.some(pc => pc && c && pc.id === c.id));
       
@@ -165,7 +293,7 @@ export const GameBoard: React.FC = () => {
         ...newTrick, 
         cards: { ...newTrick.cards, [player]: cards } 
       };
-
+ 
       // Count how many players have played in this trick
       const playersPlayed = (Object.values(updatedTrick.cards) as CardType[][]).filter(c => c && c.length > 0).length;
       
@@ -190,9 +318,9 @@ export const GameBoard: React.FC = () => {
           }
         });
         const trickPoints = NanningRules.calculatePoints(allPlayedCards);
-
-        const winnerName = winner === 0 ? "我" : winner === 1 ? "东家" : winner === 2 ? "北家" : "西家";
-
+ 
+        const winnerName = getPlayerName(winner);
+ 
         return {
           ...prev,
           hands: { ...prev.hands, [player]: newHand },
@@ -209,7 +337,7 @@ export const GameBoard: React.FC = () => {
   };
 
   const handleCollectTrick = useCallback(() => {
-    setGameState(prev => {
+    updateStateAndSync(prev => {
       const trick = prev.currentTrick;
       if (!trick || trick.winner === undefined) return prev;
       
@@ -287,6 +415,12 @@ export const GameBoard: React.FC = () => {
           { ...newTeams[0] },
           { ...newTeams[1] }
         ] as [TeamState, TeamState];
+
+        const previousWinnerLevel = prev.teams[nextBankerTeamIdx].level;
+        // Absolute victory condition: reaches 'A' and exceed 'A' by winning this round as banker playing 'A'
+        const isAbsoluteWin = (previousWinnerLevel === 'A' && nextBankerTeamIdx === bankerTeamIdx);
+        const gameWinner = isAbsoluteWin ? nextBankerTeamIdx : null;
+
         updatedTeams[nextBankerTeamIdx].level = nextLevel(updatedTeams[nextBankerTeamIdx].level, levelInc);
         updatedTeams[nextBankerTeamIdx].isBanker = true;
         updatedTeams[1 - nextBankerTeamIdx].isBanker = false;
@@ -305,7 +439,10 @@ export const GameBoard: React.FC = () => {
           phase: 'GAMEOVER',
           bankerPos: nextBankerPos,
           nextBankerOfTeam: updatedNextBankerOfTeam,
-          message: `${settlementMsg} ${score >= 160 ? "闲家夺庄成功！" : "庄家成功保庄！"}`
+          gameWinner: gameWinner,
+          message: isAbsoluteWin 
+            ? `恭喜 ${nextBankerTeamIdx === 0 ? `${getPlayerName(0)}与${getPlayerName(2)}组合` : `${getPlayerName(1)}与${getPlayerName(3)}组合`} 成功打过 A 级，赢得终极胜利！`
+            : `${settlementMsg} ${score >= 160 ? "闲家夺庄成功！" : "庄家成功保庄！"}`
         };
       }
 
@@ -320,10 +457,10 @@ export const GameBoard: React.FC = () => {
         lastTrick: trick,
         teams: newTeams,
         currentPlayer: winner,
-        message: `${winner === 0 ? "我" : winner === 1 ? "东家" : winner === 2 ? "北家" : "西家"} 获胜，请领牌`
+        message: `${getPlayerName(winner)} 获胜，请领牌`
       };
     });
-  }, []);
+  }, [updateStateAndSync, getPlayerName]);
 
   // Handle trick countdown activation
   useEffect(() => {
@@ -372,8 +509,9 @@ export const GameBoard: React.FC = () => {
 
   const handleBid = (suit: CardType['suit'], count: number) => {
     const suitName = suit === 'spade' ? '黑桃' : suit === 'heart' ? '红桃' : suit === 'club' ? '梅花' : suit === 'diamond' ? '方块' : '无主';
+    const me = multiplayerMode === 'online' ? localPlayerIndex : 0;
     
-    setGameState(prev => {
+    updateStateAndSync(prev => {
       // 1. Check if we can bid (priority and count)
       if (prev.currentBid && count <= prev.currentBid.count) {
         return prev;
@@ -382,12 +520,12 @@ export const GameBoard: React.FC = () => {
       // If it's first round, the bidder becomes the banker
       let newBanker = prev.bankerPos;
       if (prev.isFirstRound) {
-        newBanker = 0;
+        newBanker = me;
       }
 
       const displayMessage = prev.settings.isPublicBid 
-        ? `我 叫牌: ${count}张${suitName}`
-        : `我 叫牌: ${count}张 (内容隐藏)`;
+        ? `${getPlayerName(me)} 叫牌: ${count}张${suitName}`
+        : `${getPlayerName(me)} 叫牌: ${count}张 (内容隐藏)`;
 
       // Sync the teams isBanker status so that scoreboard is completely accurate
       const newTeams = prev.teams.map((t, idx) => ({
@@ -397,7 +535,7 @@ export const GameBoard: React.FC = () => {
 
       return {
         ...prev,
-        currentBid: { player: 0, suit, count },
+        currentBid: { player: me, suit, count },
         trumpSuit: suit,
         bankerPos: newBanker,
         teams: newTeams,
@@ -407,7 +545,7 @@ export const GameBoard: React.FC = () => {
   };
 
   const finishBidding = () => {
-    setGameState(prev => {
+    updateStateAndSync(prev => {
       const trump = prev.trumpSuit || 'spade'; 
       const finalHands = { ...prev.hands };
       const currentBottom = prev.bottomCards || [];
@@ -430,9 +568,10 @@ export const GameBoard: React.FC = () => {
       } else {
         // Banker gets 8 bottom cards
         finalHands[banker] = [...finalHands[banker], ...currentBottom];
-        msg = banker === 0 
+        const me = multiplayerMode === 'online' ? localPlayerIndex : 0;
+        msg = banker === me 
           ? "叫牌结束，您是庄家，请选择8张手牌放入底牌" 
-          : `${banker === 1 ? '东家' : banker === 2 ? '北家' : '西家'}是庄家，正在替换底牌...`;
+          : `${getPlayerName(banker)}是庄家，正在替换底牌...`;
       }
       
       for (let i = 0; i < 4; i++) {
@@ -456,19 +595,20 @@ export const GameBoard: React.FC = () => {
   const handleReplaceBottom = (selectedCards: CardType[]) => {
     if (selectedCards.length !== gameState.settings.bottomCardCount) return;
     
-    setGameState(prev => {
-      const bankerHand = prev.hands[0] || [];
+    updateStateAndSync(prev => {
+      const banker = prev.bankerPos;
+      const bankerHand = prev.hands[banker] || [];
       const newHand = bankerHand.filter(c => !selectedCards.some(sc => sc.id === c.id));
       
       return {
         ...prev,
         hands: {
           ...prev.hands,
-          [0]: NanningRules.sortHand(newHand, prev.trumpSuit, prev.trumpLevel)
+          [banker]: NanningRules.sortHand(newHand, prev.trumpSuit, prev.trumpLevel)
         },
         bottomCards: selectedCards,
         phase: 'PLAYING',
-        currentPlayer: 0,
+        currentPlayer: banker,
         message: "埋底完成，游戏开始！请出牌。"
       };
     });
@@ -550,7 +690,8 @@ export const GameBoard: React.FC = () => {
   }, [gameState.phase, gameState.dealingCount, gameState.currentBid]);
 
   const handlePlay = (cards: CardType[]) => {
-    if (gameState.phase !== 'PLAYING' || gameState.currentPlayer !== 0) return;
+    const me = multiplayerMode === 'online' ? localPlayerIndex : 0;
+    if (gameState.phase !== 'PLAYING' || gameState.currentPlayer !== me) return;
     
     // Check if player is leading a new trick:
     if (!gameState.currentTrick && cards.length > 1) {
@@ -561,7 +702,7 @@ export const GameBoard: React.FC = () => {
         return isT ? (firstSuit === 'trump') : (firstSuit !== 'trump' && c.suit === firstSuit);
       });
       if (!allSame) {
-        setGameState(prev => ({ ...prev, message: "首家出牌必须为同一花色的牌或同为主牌/副牌！" }));
+        updateStateAndSync(prev => ({ ...prev, message: "首家出牌必须为同一花色的牌或同为主牌/副牌！" }));
         return;
       }
     }
@@ -574,16 +715,33 @@ export const GameBoard: React.FC = () => {
       ? (NanningRules.isTrump(gameState.currentTrick.cards[gameState.currentTrick.leader]?.[0], gameState.trumpSuit, gameState.trumpLevel) ? 'trump' : gameState.currentTrick.cards[gameState.currentTrick.leader]?.[0]?.suit)
       : (NanningRules.isTrump(cards?.[0], gameState.trumpSuit, gameState.trumpLevel) ? 'trump' : cards?.[0]?.suit);
 
-    if (!NanningRules.isLegalPlay(cards, gameState.hands[0], leadPattern, leadSuit as any, gameState.trumpSuit, gameState.trumpLevel)) {
-       setGameState(prev => ({ ...prev, message: "不符合跟牌或出牌规则！" }));
+    if (!NanningRules.isLegalPlay(cards, gameState.hands[me], leadPattern, leadSuit as any, gameState.trumpSuit, gameState.trumpLevel)) {
+       updateStateAndSync(prev => ({ ...prev, message: "不符合跟牌或出牌规则！" }));
        return;
     }
 
-    handlePlayInternal(0, cards);
+    handlePlayInternal(me, cards);
   };
+
+  const me = multiplayerMode === 'online' ? localPlayerIndex : 0;
+  const rightSeat = ((me + 1) % 4) as PlayerPosition;
+  const topSeat = ((me + 2) % 4) as PlayerPosition;
+  const leftSeat = ((me + 3) % 4) as PlayerPosition;
 
   const bankerTeamIdx = gameState.teams[0].isBanker ? 0 : 1;
   const challengerTeamIdx = 1 - bankerTeamIdx;
+
+  if (multiplayerMode === null) {
+    return (
+      <MultiplayerLobby 
+        onJoinSuccess={handleJoinMultiplayerSuccess}
+        onSelectOffline={() => {
+          setMultiplayerMode('offline');
+          setShowSettings(true);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="game-rotate-container flex flex-col h-[100dvh] w-full bg-[#050a07] text-[#e0d8cc] font-sans overflow-hidden relative select-none">
@@ -697,67 +855,81 @@ export const GameBoard: React.FC = () => {
             <div className="absolute top-2.5 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center">
               <div className={cn(
                 "flex items-center gap-1.5 rounded-full px-3 py-1 bg-[#1f2736]/90 border border-slate-700/50 shadow-md transition-all duration-300",
-                gameState.currentPlayer === 2 && "border-gold ring-2 ring-gold/40 scale-102 bg-[#2d3852]"
+                gameState.currentPlayer === topSeat && "border-gold ring-2 ring-gold/40 scale-102 bg-[#2d3852]"
               )}>
-                 <span className="bg-slate-800 text-slate-300 text-[9px] font-bold px-1 rounded-sm">北</span>
-                 <span className="text-[10px] sm:text-xs font-black tracking-wide text-white/95">玩家3</span>
-                 {gameState.bankerPos === 2 && <span className="bg-gold text-black text-[9px] font-black px-1 rounded-sm">庄</span>}
-                 {gameState.currentPlayer === 2 && <span className="w-1.5 h-1.5 rounded-full bg-gold animate-ping" />}
+                 <span className="bg-slate-800 text-slate-300 text-[9px] font-bold px-1 rounded-sm">
+                   {topSeat === 0 ? '南' : topSeat === 1 ? '东' : topSeat === 2 ? '北' : '西'}
+                 </span>
+                 <span className="text-[10px] sm:text-xs font-black tracking-wide text-white/95">
+                   {getPlayerName(topSeat)}
+                 </span>
+                 {gameState.bankerPos === topSeat && <span className="bg-gold text-black text-[9px] font-black px-1 rounded-sm">庄</span>}
+                 {gameState.currentPlayer === topSeat && <span className="w-1.5 h-1.5 rounded-full bg-gold animate-ping" />}
               </div>
-              <OpponentHand count={gameState.hands[2].length} />
+              <OpponentHand count={(gameState.hands[topSeat] || []).length} />
             </div>
 
             {/* Player 4 (西家 / Left, pos 3) */}
             <div className="absolute left-2.5 top-1/2 -translate-y-1/2 z-40 flex flex-col items-center">
               <div className={cn(
                 "flex items-center gap-1.5 rounded-full px-3 py-1 bg-[#1f2736]/90 border border-slate-700/50 shadow-md transition-all duration-300",
-                gameState.currentPlayer === 3 && "border-gold ring-2 ring-gold/40 scale-102 bg-[#2d3852]"
+                gameState.currentPlayer === leftSeat && "border-gold ring-2 ring-gold/40 scale-102 bg-[#2d3852]"
               )}>
-                 <span className="bg-slate-800 text-slate-300 text-[9px] font-bold px-1 rounded-sm">西</span>
-                 <span className="text-[10px] sm:text-xs font-black tracking-wide text-white/95">玩家4</span>
-                 {gameState.bankerPos === 3 && <span className="bg-gold text-black text-[9px] font-black px-1 rounded-sm">庄</span>}
-                 {gameState.currentPlayer === 3 && <span className="w-1.5 h-1.5 rounded-full bg-gold animate-ping" />}
+                 <span className="bg-slate-800 text-slate-300 text-[9px] font-bold px-1 rounded-sm">
+                   {leftSeat === 0 ? '南' : leftSeat === 1 ? '东' : leftSeat === 2 ? '北' : '西'}
+                 </span>
+                 <span className="text-[10px] sm:text-xs font-black tracking-wide text-white/95">
+                   {getPlayerName(leftSeat)}
+                 </span>
+                 {gameState.bankerPos === leftSeat && <span className="bg-gold text-black text-[9px] font-black px-1 rounded-sm">庄</span>}
+                 {gameState.currentPlayer === leftSeat && <span className="w-1.5 h-1.5 rounded-full bg-gold animate-ping" />}
               </div>
-              <OpponentHand count={gameState.hands[3].length} />
+              <OpponentHand count={(gameState.hands[leftSeat] || []).length} />
             </div>
 
             {/* Player 2 (东家 / Right, pos 1) */}
             <div className="absolute right-2.5 top-1/2 -translate-y-1/2 z-40 flex flex-col items-center">
               <div className={cn(
                 "flex items-center gap-1.5 rounded-full px-3 py-1 bg-[#1f2736]/90 border border-slate-700/50 shadow-md transition-all duration-300",
-                gameState.currentPlayer === 1 && "border-gold ring-2 ring-gold/40 scale-102 bg-[#2d3852]"
+                gameState.currentPlayer === rightSeat && "border-gold ring-2 ring-gold/40 scale-102 bg-[#2d3852]"
               )}>
-                 <span className="bg-slate-800 text-slate-300 text-[9px] font-bold px-1 rounded-sm">东</span>
-                 <span className="text-[10px] sm:text-xs font-black tracking-wide text-white/95">玩家2</span>
-                 {gameState.bankerPos === 1 && <span className="bg-gold text-black text-[9px] font-black px-1 rounded-sm">庄</span>}
-                 {gameState.currentPlayer === 1 && <span className="w-1.5 h-1.5 rounded-full bg-gold animate-ping" />}
+                 <span className="bg-slate-800 text-slate-300 text-[9px] font-bold px-1 rounded-sm">
+                   {rightSeat === 0 ? '南' : rightSeat === 1 ? '东' : rightSeat === 2 ? '北' : '西'}
+                 </span>
+                 <span className="text-[10px] sm:text-xs font-black tracking-wide text-white/95">
+                   {getPlayerName(rightSeat)}
+                 </span>
+                 {gameState.bankerPos === rightSeat && <span className="bg-gold text-black text-[9px] font-black px-1 rounded-sm">庄</span>}
+                 {gameState.currentPlayer === rightSeat && <span className="w-1.5 h-1.5 rounded-full bg-gold animate-ping" />}
               </div>
-              <OpponentHand count={gameState.hands[1].length} />
+              <OpponentHand count={(gameState.hands[rightSeat] || []).length} />
             </div>
 
             {/* Player 1 (你 / Bottom-Left, pos 0) */}
             <div className="absolute bottom-[24%] sm:bottom-[25%] left-4 sm:left-8 z-40 flex items-center gap-2">
               <div className={cn(
                 "flex items-center gap-1.5 rounded-full px-3 py-1 bg-[#1f2736]/90 border border-slate-700/50 shadow-md transition-all duration-300",
-                gameState.currentPlayer === 0 && "border-gold ring-2 ring-gold/40 scale-102 bg-[#2d3852]"
+                gameState.currentPlayer === me && "border-gold ring-2 ring-gold/40 scale-102 bg-[#2d3852]"
               )}>
                  <span className={cn(
                    "text-[9px] font-bold px-1 rounded-sm",
-                   gameState.currentPlayer === 0 ? "bg-amber-500 text-black font-extrabold shadow-sm" : "bg-slate-800 text-slate-300"
-                 )}>南</span>
-                 <span className="text-[10px] sm:text-xs font-black tracking-wide text-white/95">玩家1 (你)</span>
-                 {gameState.bankerPos === 0 && (
+                   gameState.currentPlayer === me ? "bg-amber-500 text-black font-extrabold shadow-sm" : "bg-slate-800 text-slate-300"
+                 )}>{me === 0 ? '南' : me === 1 ? '东' : me === 2 ? '北' : '西'}</span>
+                 <span className="text-[10px] sm:text-xs font-black tracking-wide text-white/95">
+                   {getPlayerName(me)} {multiplayerMode === 'online' && "(我)"}
+                 </span>
+                 {gameState.bankerPos === me && (
                    <span className="bg-gold text-black text-[9px] font-black px-1 rounded-sm">庄</span>
                  )}
-                 {gameState.currentPlayer === 0 && <span className="w-1.5 h-1.5 rounded-full bg-red-600 animate-ping" />}
+                 {gameState.currentPlayer === me && <span className="w-1.5 h-1.5 rounded-full bg-red-600 animate-ping" />}
               </div>
               <span className={cn(
                 "text-[8px] sm:text-[9px] px-2 py-0.5 rounded-full font-bold shadow-sm shrink-0",
-                gameState.currentPlayer === 0 
+                gameState.currentPlayer === me 
                   ? "bg-amber-500/20 text-amber-300 border border-amber-500/30" 
                   : "bg-black/80 text-[#d4af37] border border-[#d4af37]/20"
               )}>
-                {gameState.hands[0].length}张牌
+                {(gameState.hands[me] || []).length}张牌
               </span>
             </div>
 
@@ -767,7 +939,7 @@ export const GameBoard: React.FC = () => {
                  <div className="flex flex-wrap justify-end gap-1.5 pointer-events-auto max-w-xs sm:max-w-md bg-black/75 border border-white/5 p-2 rounded-2xl shadow-xl backdrop-blur-md">
                     {/* Standard Suits Bidding options */}
                     {(['spade', 'heart', 'club', 'diamond'] as const).map(suit => {
-                      const countInHand = gameState.hands[0].filter(c => c && c.suit === suit && c.rank === gameState.trumpLevel).length;
+                      const countInHand = (gameState.hands[me] || []).filter(c => c && c.suit === suit && c.rank === gameState.trumpLevel).length;
                       if (countInHand === 0) return null;
                       
                       const maxPossible = Math.min(4, countInHand);
@@ -821,76 +993,124 @@ export const GameBoard: React.FC = () => {
                      <div className="flex items-center gap-1">
                         <span className="bg-gold text-black px-1.5 rounded leading-none py-0.5 uppercase">
                           {gameState.currentBid.player === 0 ? "我" : gameState.currentBid.player === 1 ? "东" : gameState.currentBid.player === 2 ? "北" : "西"}
-                        </span>
-                        <span>{gameState.currentBid.count}张</span>
-                        {gameState.settings.isPublicBid && (
-                          <span className={cn(
-                            gameState.currentBid.suit === 'spade' && "text-blue-400",
-                            gameState.currentBid.suit === 'heart' && "text-red-500",
-                            gameState.currentBid.suit === 'club' && "text-green-500",
-                            gameState.currentBid.suit === 'diamond' && "text-orange-400",
-                            gameState.currentBid.suit === 'joker' && "text-red-500"
-                          )}>
-                             {gameState.currentBid.suit === 'spade' ? '♠' : gameState.currentBid.suit === 'heart' ? '♥' : gameState.currentBid.suit === 'club' ? '♣' : gameState.currentBid.suit === 'diamond' ? '♦' : '无主 🃏'}
-                          </span>
-                        )}
-                        {!gameState.settings.isPublicBid && <span className="opacity-40">[内容隐藏]</span>}
-                     </div>
-                   </motion.div>
-                 )}
-              </div>
-            )}
+                         </span>
+                         <span>{gameState.currentBid.count}张</span>
+                         {gameState.settings.isPublicBid && (
+                           <span className={cn(
+                             "text-xs",
+                             gameState.currentBid.suit === 'spade' && "text-blue-400",
+                             gameState.currentBid.suit === 'heart' && "text-red-500",
+                             gameState.currentBid.suit === 'club' && "text-green-500",
+                             gameState.currentBid.suit === 'diamond' && "text-orange-400",
+                             gameState.currentBid.suit === 'joker' && "text-red-500"
+                           )}>
+                              {gameState.currentBid.suit === 'spade' ? '♠' : gameState.currentBid.suit === 'heart' ? '♥' : gameState.currentBid.suit === 'club' ? '♣' : gameState.currentBid.suit === 'diamond' ? '♦' : '无主 🃏'}
+                           </span>
+                         )}
+                         {!gameState.settings.isPublicBid && <span className="opacity-40">[内容隐藏]</span>}
+                      </div>
+                    </motion.div>
+                  )}
+               </div>
+             )}
 
             {/* Game Over Screen */}
             {gameState.phase === 'GAMEOVER' && (
               <div className="absolute inset-0 z-50 bg-black/90 flex items-center justify-center flex-col gap-6 backdrop-blur-md">
-                <div className="text-center">
-                  <h2 className="text-4xl font-black text-[#d4af37] tracking-tighter mb-2">本局结束</h2>
-                  <p className="text-sm font-bold opacity-60 tracking-widest uppercase">结算详单</p>
-                </div>
-                
-                <div className="flex gap-8 items-center py-6 border-y border-white/10 w-full max-w-md justify-center">
-                  <div className="text-center">
-                    <p className="text-[10px] opacity-40 uppercase mb-1">
-                      庄家方 ({bankerTeamIdx === 0 ? "南/北" : "东/西"})
+                {gameState.gameWinner !== undefined && gameState.gameWinner !== null ? (
+                  /* Spectacular Ultimate Victory Screener */
+                  <motion.div 
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="text-center p-8 sm:p-12 max-w-lg w-full mx-4 bg-gradient-to-b from-[#14231b] to-[#040c06] border-2 border-gold rounded-[40px] shadow-[0_0_100px_rgba(212,175,55,0.3)] flex flex-col items-center relative overflow-hidden"
+                  >
+                    {/* Confetti / Particle Glow */}
+                    <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-yellow-500/10 via-transparent to-transparent pointer-events-none"></div>
+                    <div className="absolute -top-12 -left-12 w-40 h-40 bg-gold/10 rounded-full blur-3xl pointer-events-none"></div>
+                    <div className="absolute -bottom-12 -right-12 w-40 h-40 bg-gold/10 rounded-full blur-3xl pointer-events-none"></div>
+                    
+                    <motion.div 
+                      animate={{ rotate: [0, -10, 10, -10, 10, 0] }}
+                      transition={{ repeat: Infinity, duration: 4, ease: "easeInOut" }}
+                      className="text-6xl sm:text-7xl mb-6 select-none"
+                    >
+                      🏆
+                    </motion.div>
+                    
+                    <p className="text-xs font-black text-gold/80 tracking-[0.3em] uppercase mb-3 text-center">
+                      ⭐ ULTIMATE VICTORY ⭐
                     </p>
-                    <p className="text-2xl font-bold">{gameState.teams[bankerTeamIdx].score}</p>
-                    <p className="text-xs text-[#d4af37]">级牌: {gameState.teams[bankerTeamIdx].level}</p>
-                  </div>
-                  <div className="w-px h-12 bg-white/10" />
-                  <div className="text-center">
-                    <p className="text-[10px] opacity-40 uppercase mb-1">
-                      闲家方 ({bankerTeamIdx === 0 ? "东/西" : "南/北"})
-                    </p>
-                    <p className="text-2xl font-bold text-[#d4af37]">{gameState.teams[challengerTeamIdx].score}</p>
-                    <p className="text-xs text-[#d4af37]">级牌: {gameState.teams[challengerTeamIdx].level}</p>
-                  </div>
-                </div>
-
-                <div className="text-center text-sm px-6 font-bold text-[#d4af37] italic max-w-md leading-relaxed">
-                  {gameState.message}
-                </div>
-
-                {/* Show Bottom Cards inside the GameOver overlay */}
-                {gameState.bottomCards && gameState.bottomCards.length > 0 && (
-                  <div className="flex flex-col items-center gap-2 max-w-lg">
-                    <p className="text-[10px] uppercase opacity-40 font-bold tracking-widest text-[#d4af37]">庄家扣置的 {gameState.bottomCards.length} 张底牌</p>
-                    <div className="flex gap-1 justify-center flex-wrap max-h-[140px] overflow-y-auto p-1 border border-white/5 bg-black/40 rounded-xl">
-                      {gameState.bottomCards.map((c, i) => (
-                        <div key={i} className="scale-75 origin-center">
-                          <PlayingCard card={c} isTrump={NanningRules.isTrump(c, gameState.trumpSuit, gameState.trumpLevel)} />
-                        </div>
-                      ))}
+                    
+                    <h2 className="text-3xl sm:text-4xl font-black text-white tracking-widest text-center mb-6 leading-relaxed">
+                      恭喜<span className="text-gold bg-gold/10 border border-gold/30 px-3 py-1 rounded-2xl mx-1">{gameState.gameWinner === 0 ? "南北组合" : "东西组合"}</span>获胜！
+                    </h2>
+                    
+                    <div className="w-full bg-white/5 border border-white/5 rounded-2xl p-5 mb-8 text-center">
+                      <p className="text-xs text-zinc-400 font-bold mb-1">胜利规则依据</p>
+                      <p className="text-[13px] text-[#d4af37] font-semibold leading-relaxed">
+                        成功打到级别 A 并在本局战胜对手！<br />
+                        超越 A 级限制，夺得本场南宁拖拉机的全盘总冠军！
+                      </p>
                     </div>
-                  </div>
-                )}
 
-                <button 
-                  onClick={() => startNewRound(gameState.bankerPos, gameState.teams[0].level, gameState.teams[1].level)}
-                  className="px-8 py-3 bg-[#d4af37] text-black font-black rounded-full hover:scale-105 active:scale-95 transition-all shadow-lg mt-2 cursor-pointer"
-                >
-                  继续下一局
-                </button>
+                    <button 
+                      onClick={handleRestartEverything}
+                      className="w-full max-w-sm py-4 bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-black font-black text-sm rounded-2xl tracking-widest shadow-[0_12px_40px_rgba(245,158,11,0.35)] transition-all cursor-pointer border border-amber-300 transform active:scale-98"
+                    >
+                      🔄 重新开始新游戏
+                    </button>
+                  </motion.div>
+                ) : (
+                  <>
+                    <div className="text-center">
+                      <h2 className="text-4xl font-black text-[#d4af37] tracking-tighter mb-2">本局结束</h2>
+                      <p className="text-sm font-bold opacity-60 tracking-widest uppercase">结算详单</p>
+                    </div>
+                    
+                    <div className="flex gap-8 items-center py-6 border-y border-white/10 w-full max-w-md justify-center">
+                      <div className="text-center">
+                        <p className="text-[10px] opacity-40 uppercase mb-1">
+                          庄家方 ({bankerTeamIdx === 0 ? "南/北" : "东/西"})
+                        </p>
+                        <p className="text-2xl font-bold">{gameState.teams[bankerTeamIdx].score}</p>
+                        <p className="text-xs text-[#d4af37]">级牌: {gameState.teams[bankerTeamIdx].level}</p>
+                      </div>
+                      <div className="w-px h-12 bg-white/10" />
+                      <div className="text-center">
+                        <p className="text-[10px] opacity-40 uppercase mb-1">
+                          闲家方 ({bankerTeamIdx === 0 ? "东/西" : "南/北"})
+                        </p>
+                        <p className="text-2xl font-bold text-[#d4af37]">{gameState.teams[challengerTeamIdx].score}</p>
+                        <p className="text-xs text-[#d4af37]">级牌: {gameState.teams[challengerTeamIdx].level}</p>
+                      </div>
+                    </div>
+
+                    <div className="text-center text-sm px-6 font-bold text-[#d4af37] italic max-w-md leading-relaxed">
+                      {gameState.message}
+                    </div>
+
+                    {/* Show Bottom Cards inside the GameOver overlay */}
+                    {gameState.bottomCards && gameState.bottomCards.length > 0 && (
+                      <div className="flex flex-col items-center gap-2 max-w-lg">
+                        <p className="text-[10px] uppercase opacity-40 font-bold tracking-widest text-[#d4af37]">庄家扣置的 {gameState.bottomCards.length} 张底牌</p>
+                        <div className="flex gap-1 justify-center flex-wrap max-h-[140px] overflow-y-auto p-1 border border-white/5 bg-black/40 rounded-xl">
+                          {gameState.bottomCards.map((c, i) => (
+                            <div key={i} className="scale-75 origin-center">
+                              <PlayingCard card={c} isTrump={NanningRules.isTrump(c, gameState.trumpSuit, gameState.trumpLevel)} />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <button 
+                      onClick={() => startNewRound(gameState.bankerPos, gameState.teams[0].level, gameState.teams[1].level)}
+                      className="px-8 py-3 bg-[#d4af37] text-black font-black rounded-full hover:scale-105 active:scale-95 transition-all shadow-lg mt-2 cursor-pointer"
+                    >
+                      继续下一局
+                    </button>
+                  </>
+                )}
               </div>
             )}
 
@@ -923,6 +1143,8 @@ export const GameBoard: React.FC = () => {
                       const cards = gameState.currentTrick!.cards[pos];
                       if (!cards || cards.length === 0) return null;
 
+                      const visualPos = pos === me ? 0 : pos === rightSeat ? 1 : pos === topSeat ? 2 : 3;
+
                       const posConfig: Record<number, { container: string, animate: any }> = {
                         0: { container: "absolute bottom-1 sm:bottom-2 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 z-10", animate: { y: 0, opacity: 1, scale: 1 } },
                         1: { container: "absolute right-1 sm:right-2 top-1/2 -translate-y-1/2 flex flex-col items-center gap-1 z-10", animate: { x: 0, opacity: 1, scale: 1 } },
@@ -930,16 +1152,21 @@ export const GameBoard: React.FC = () => {
                         3: { container: "absolute left-1 sm:left-2 top-1/2 -translate-y-1/2 flex flex-col items-center gap-1 z-10", animate: { x: 0, opacity: 1, scale: 1 } }
                       };
 
-                      const label = pos === 0 ? "我" : pos === 1 ? "东" : pos === 2 ? "北" : "西";
+                      const label = getPlayerName(pos);
                       const isLeader = gameState.currentTrick?.leader === pos;
 
                       return (
                         <motion.div 
                           key={`trick-${pos}`}
-                          initial={{ opacity: 0, scale: 0.8, y: pos === 0 ? 50 : pos === 2 ? -50 : 0, x: pos === 1 ? 50 : pos === 3 ? -50 : 0 }}
-                          animate={posConfig[pos].animate}
+                          initial={{ 
+                            opacity: 0, 
+                            scale: 0.8, 
+                            y: visualPos === 0 ? 50 : visualPos === 2 ? -50 : 0, 
+                            x: visualPos === 1 ? 50 : visualPos === 3 ? -50 : 0 
+                          }}
+                          animate={posConfig[visualPos].animate}
                           exit={{ opacity: 0, scale: 1.1, filter: "brightness(2)" }}
-                          className={cn("absolute flex flex-col items-center gap-1.5 p-1 bg-black/60 rounded-xl border border-white/10 backdrop-blur-md pointer-events-auto shadow-xl z-20", posConfig[pos].container)}
+                          className={cn("absolute flex flex-col items-center gap-1.5 p-1 bg-black/60 rounded-xl border border-white/10 backdrop-blur-md pointer-events-auto shadow-xl z-20", posConfig[visualPos].container)}
                         >
                           <div className="flex items-center gap-0.5 bg-black/85 px-2 py-0.5 rounded text-[8px] sm:text-[9px] font-black border border-white/10 uppercase">
                             <span className={isLeader ? "text-gold" : "text-white/60"}>
@@ -1026,13 +1253,13 @@ export const GameBoard: React.FC = () => {
               <div className="absolute bottom-1 inset-x-2 z-40 pointer-events-none flex items-end justify-center">
                 <div className="max-w-[1550px] w-full pointer-events-auto">
                   <Hand 
-                    cards={gameState.hands[0]}
+                    cards={gameState.hands[me] || []}
                     onPlay={gameState.phase === 'BOTTOM_REPLACEMENT' ? handleReplaceBottom : handlePlay}
                     isDealing={isDealing}
                     playDisabled={
                       isDealing || 
-                      (gameState.phase === 'BOTTOM_REPLACEMENT' && gameState.bankerPos !== 0) ||
-                      (gameState.phase === 'PLAYING' && gameState.currentPlayer !== 0) ||
+                      (gameState.phase === 'BOTTOM_REPLACEMENT' && gameState.bankerPos !== me) ||
+                      (gameState.phase === 'PLAYING' && gameState.currentPlayer !== me) ||
                       (gameState.phase !== 'BOTTOM_REPLACEMENT' && gameState.phase !== 'PLAYING')
                     }
                     playActionLabel={gameState.phase === 'BOTTOM_REPLACEMENT' ? "确认入底牌" : "确认出牌"}
@@ -1040,7 +1267,7 @@ export const GameBoard: React.FC = () => {
                     trumpSuit={gameState.trumpSuit}
                     trumpLevel={gameState.trumpLevel}
                     phase={gameState.phase}
-                    onHint={() => playAICards(0, gameState)}
+                    onHint={() => playAICards(me, gameState)}
                   />
                 </div>
               </div>
@@ -1205,12 +1432,14 @@ export const GameBoard: React.FC = () => {
                   </div>
                   <div className="flex gap-2">
                      <button 
-                       onClick={() => setGameState(prev => ({ ...prev, settings: { ...prev.settings, isPublicBid: true }}))}
-                       className={cn("px-3.5 py-1.5 sm:px-4 sm:py-2 rounded-lg text-xs font-bold transition-all", gameState.settings.isPublicBid ? "bg-gold text-black font-black" : "bg-white/5 text-white/40")}
+                       disabled={multiplayerMode === 'online' && !isHost}
+                       onClick={() => updateStateAndSync(prev => ({ ...prev, settings: { ...prev.settings, isPublicBid: true }}))}
+                       className={cn("px-3.5 py-1.5 sm:px-4 sm:py-2 rounded-lg text-xs font-bold transition-all", gameState.settings.isPublicBid ? "bg-gold text-black font-black" : "bg-white/5 text-white/40", multiplayerMode === 'online' && !isHost ? "opacity-50 cursor-not-allowed" : "")}
                      >明叫</button>
                      <button 
-                       onClick={() => setGameState(prev => ({ ...prev, settings: { ...prev.settings, isPublicBid: false }}))}
-                       className={cn("px-3.5 py-1.5 sm:px-4 sm:py-2 rounded-lg text-xs font-bold transition-all", !gameState.settings.isPublicBid ? "bg-gold text-black font-black" : "bg-white/5 text-white/40")}
+                       disabled={multiplayerMode === 'online' && !isHost}
+                       onClick={() => updateStateAndSync(prev => ({ ...prev, settings: { ...prev.settings, isPublicBid: false }}))}
+                       className={cn("px-3.5 py-1.5 sm:px-4 sm:py-2 rounded-lg text-xs font-bold transition-all", !gameState.settings.isPublicBid ? "bg-gold text-black font-black" : "bg-white/5 text-white/40", multiplayerMode === 'online' && !isHost ? "opacity-50 cursor-not-allowed" : "")}
                      >暗叫</button>
                   </div>
                 </div>
@@ -1222,27 +1451,31 @@ export const GameBoard: React.FC = () => {
                   </div>
                   <div className="flex gap-2">
                      <button 
-                       onClick={() => setGameState(prev => ({ ...prev, settings: { ...prev.settings, bottomCardCount: 8 }}))}
-                       className={cn("px-3.5 py-1.5 sm:px-4 sm:py-2 rounded-lg text-xs font-bold transition-all", gameState.settings.bottomCardCount === 8 ? "bg-gold text-black font-black" : "bg-white/5 text-white/40")}
+                       disabled={multiplayerMode === 'online' && !isHost}
+                       onClick={() => updateStateAndSync(prev => ({ ...prev, settings: { ...prev.settings, bottomCardCount: 8 }}))}
+                       className={cn("px-3.5 py-1.5 sm:px-4 sm:py-2 rounded-lg text-xs font-bold transition-all", gameState.settings.bottomCardCount === 8 ? "bg-gold text-black font-black" : "bg-white/5 text-white/40", multiplayerMode === 'online' && !isHost ? "opacity-50 cursor-not-allowed" : "")}
                      >8张</button>
                      <button 
-                       onClick={() => setGameState(prev => ({ ...prev, settings: { ...prev.settings, bottomCardCount: 0 }}))}
-                       className={cn("px-3.5 py-1.5 sm:px-4 sm:py-2 rounded-lg text-xs font-bold transition-all", gameState.settings.bottomCardCount === 0 ? "bg-gold text-black font-black" : "bg-white/5 text-white/40")}
+                       disabled={multiplayerMode === 'online' && !isHost}
+                       onClick={() => updateStateAndSync(prev => ({ ...prev, settings: { ...prev.settings, bottomCardCount: 0 }}))}
+                       className={cn("px-3.5 py-1.5 sm:px-4 sm:py-2 rounded-lg text-xs font-bold transition-all", gameState.settings.bottomCardCount === 0 ? "bg-gold text-black font-black" : "bg-white/5 text-white/40", multiplayerMode === 'online' && !isHost ? "opacity-50 cursor-not-allowed" : "")}
                      >0张</button>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
                    <button 
-                     onClick={() => setGameState(prev => ({ ...prev, settings: { ...prev.settings, allowCounterBid: !prev.settings.allowCounterBid }}))}
-                     className={cn("p-4 rounded-2xl border transition-all text-left", gameState.settings.allowCounterBid ? "bg-gold/10 border-gold/40" : "bg-white/5 border-white/5")}
+                     disabled={multiplayerMode === 'online' && !isHost}
+                     onClick={() => updateStateAndSync(prev => ({ ...prev, settings: { ...prev.settings, allowCounterBid: !prev.settings.allowCounterBid }}))}
+                     className={cn("p-4 rounded-2xl border transition-all text-left", gameState.settings.allowCounterBid ? "bg-gold/10 border-gold/40" : "bg-white/5 border-white/5", multiplayerMode === 'online' && !isHost ? "opacity-50 cursor-not-allowed" : "")}
                    >
                       <p className="text-xs sm:text-sm font-bold">反扣规则</p>
                       <p className="text-[10px] opacity-40">{gameState.settings.allowCounterBid ? "已开启" : "已关闭"}</p>
                    </button>
                    <button 
-                     onClick={() => setGameState(prev => ({ ...prev, settings: { ...prev.settings, allowShuaiPai: !prev.settings.allowShuaiPai }}))}
-                     className={cn("p-4 rounded-2xl border transition-all text-left", gameState.settings.allowShuaiPai ? "bg-gold/10 border-gold/40" : "bg-white/5 border-white/5")}
+                     disabled={multiplayerMode === 'online' && !isHost}
+                     onClick={() => updateStateAndSync(prev => ({ ...prev, settings: { ...prev.settings, allowShuaiPai: !prev.settings.allowShuaiPai }}))}
+                     className={cn("p-4 rounded-2xl border transition-all text-left", gameState.settings.allowShuaiPai ? "bg-gold/10 border-gold/40" : "bg-white/5 border-white/5", multiplayerMode === 'online' && !isHost ? "opacity-50 cursor-not-allowed" : "")}
                    >
                       <p className="text-xs sm:text-sm font-bold">允许甩牌</p>
                       <p className="text-[10px] opacity-40">{gameState.settings.allowShuaiPai ? "已开启" : "已关闭"}</p>
@@ -1257,14 +1490,18 @@ export const GameBoard: React.FC = () => {
                 >
                   确定并返回
                 </button>
-                <button 
-                  onClick={startDeal}
-                  className="flex-1 bg-gold text-black font-black py-3.5 rounded-2xl hover:bg-[#ffdf7e] transition-all shadow-[0_10px_30px_rgba(212,175,55,0.3)] hover:scale-[1.01] active:scale-[0.99] cursor-pointer text-sm"
-                >
-                  开始发牌
-                </button>
+                {(!multiplayerMode || multiplayerMode === 'offline' || isHost) && (
+                  <button 
+                    onClick={startDeal}
+                    className="flex-1 bg-gold text-black font-black py-3.5 rounded-2xl hover:bg-[#ffdf7e] transition-all shadow-[0_10px_30px_rgba(212,175,55,0.3)] hover:scale-[1.01] active:scale-[0.99] cursor-pointer text-sm"
+                  >
+                    开始发牌
+                  </button>
+                )}
               </div>
-              <p className="text-[10px] text-center text-white/20">房主：我 (Player 0)</p>
+              <p className="text-[10px] text-center text-white/20">
+                房主：{multiplayerMode === 'online' ? getPlayerName(gameState.bankerPos) : "我"}
+              </p>
            </motion.div>
         </div>
       )}

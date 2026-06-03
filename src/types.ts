@@ -76,6 +76,7 @@ export interface GameState {
   dealingCount: number; // To track progress during deal
   bottomCards?: Card[]; // Bottom cards (usually 8 cards)
   nextBankerOfTeam: Record<0 | 1, PlayerPosition>; // 轮流做庄：记录各队的下一次庄家候选人位置
+  gameWinner?: 0 | 1 | null; // Wins the entire game (reaches A and exceeds A)
 }
 
 export interface GameRuleEngine {
