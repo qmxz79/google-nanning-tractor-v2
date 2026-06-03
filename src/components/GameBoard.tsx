@@ -11,7 +11,7 @@ import { motion, AnimatePresence } from 'motion/react';
 export const GameBoard: React.FC = () => {
   const [gameState, setGameState] = useState<GameState>(engine.initGameState(0, '3', '3'));
   const [isDealing, setIsDealing] = useState(false);
-  const [showSettings, setShowSettings] = useState(true);
+  const [showSettings, setShowSettings] = useState(false);
   const [collectCountdown, setCollectCountdown] = useState<number | null>(null);
   const [autoCollect, setAutoCollect] = useState(true);
   const [showRulesModal, setShowRulesModal] = useState(false);
@@ -22,7 +22,7 @@ export const GameBoard: React.FC = () => {
       const initialState = engine.initGameState(bankerPos, l0, l1, prev.nextBankerOfTeam, false);
       return initialState;
     });
-    setShowSettings(true);
+    setShowSettings(false);
     setIsDealing(false);
   }, []);
 
@@ -1086,6 +1086,107 @@ export const GameBoard: React.FC = () => {
         </div>
       )}
 
+      {/* Pregame Lobby / Welcome Screen - Modern & Elegant Landing Page */}
+      {gameState.phase === 'PREGAME' && !showSettings && (
+        <div className="fixed inset-0 z-[100] bg-[#050a07] flex flex-col items-center justify-center p-4 overflow-y-auto">
+          {/* Background Ambient Glows */}
+          <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{ backgroundImage: 'radial-gradient(#d4af37 1px, transparent 1px)', backgroundSize: '32px 32px' }}></div>
+          <div className="absolute -top-[40%] left-1/2 -translate-x-1/2 w-[600px] h-[600px] bg-[#d4af37]/5 rounded-full blur-[120px] pointer-events-none" />
+          
+          <motion.div 
+            initial={{ opacity: 0, y: 30 }} 
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ type: "spring", duration: 0.8 }}
+            className="w-full max-w-lg flex flex-col items-center relative z-10 px-4"
+          >
+            {/* Logo Token */}
+            <div className="w-20 h-20 sm:w-24 sm:h-24 border-2 border-gold/40 rounded-full flex items-center justify-center text-gold font-black text-4xl sm:text-5xl bg-gold/10 shadow-[0_0_50px_rgba(212,175,55,0.15)] mb-6 tracking-wide animate-pulse">
+              南
+            </div>
+
+            {/* Typography Title Pairings */}
+            <h1 className="text-4xl sm:text-5xl font-black text-gold tracking-[0.25em] pl-[0.25em] text-center mb-2 drop-shadow-[0_2px_10px_rgba(0,0,0,0.8)]">
+              南宁拖拉机
+            </h1>
+            <p className="text-sm font-medium text-[#d4af37]/80 tracking-widest uppercase mb-10 text-center">
+              经典地方特色 · 四副牌扑克对决
+            </p>
+
+            {/* Config Snapshot Panel */}
+            <div className="w-full bg-black/40 border border-gold/20 rounded-[28px] p-5 sm:p-6 mb-10 backdrop-blur-md">
+              <h3 className="text-xs font-bold text-[#d4af37]/60 uppercase tracking-widest mb-4 border-b border-gold/5 pb-2">
+                当前房间设定
+              </h3>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-white/5 border border-white/5 p-3 rounded-xl flex items-center gap-3">
+                  <span className="text-lg">🃏</span>
+                  <div>
+                    <p className="text-[10px] text-white/40 leading-none mb-1">底牌模式</p>
+                    <p className="text-xs font-bold text-white/90">
+                      {gameState.settings.bottomCardCount > 0 ? `${gameState.settings.bottomCardCount}张底牌` : '不发底牌'}
+                    </p>
+                  </div>
+                </div>
+                <div className="bg-white/5 border border-white/5 p-3 rounded-xl flex items-center gap-3">
+                  <span className="text-lg">📢</span>
+                  <div>
+                    <p className="text-[10px] text-white/40 leading-none mb-1">叫牌模式</p>
+                    <p className="text-xs font-bold text-white/90">
+                      {gameState.settings.isPublicBid ? '明叫 (公开)' : '暗叫 (隐藏)'}
+                    </p>
+                  </div>
+                </div>
+                <div className="bg-white/5 border border-white/5 p-3 rounded-xl flex items-center gap-3">
+                  <span className="text-lg">🔄</span>
+                  <div>
+                    <p className="text-[10px] text-white/40 leading-none mb-1">反扣规则</p>
+                    <p className="text-xs font-bold text-white/90">
+                      {gameState.settings.allowCounterBid ? '已启用' : '已关闭'}
+                    </p>
+                  </div>
+                </div>
+                <div className="bg-white/5 border border-white/5 p-3 rounded-xl flex items-center gap-3">
+                  <span className="text-lg">⚡</span>
+                  <div>
+                    <p className="text-[10px] text-white/40 leading-none mb-1">允许甩牌</p>
+                    <p className="text-xs font-bold text-white/90">
+                      {gameState.settings.allowShuaiPai ? '已启用' : '已关闭'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Action CTAs */}
+            <div className="w-full flex flex-col gap-4">
+              <motion.button
+                whileHover={{ scale: 1.01 }}
+                whileTap={{ scale: 0.99 }}
+                onClick={startDeal}
+                className="w-full py-4 bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-black font-black text-base rounded-2xl tracking-widest shadow-[0_12px_40px_rgba(245,158,11,0.25)] transition-all flex items-center justify-center gap-2 cursor-pointer border border-amber-300"
+              >
+                <span>⚔️</span>
+                <span>立即进入游戏</span>
+              </motion.button>
+
+              <motion.button
+                whileHover={{ scale: 1.01 }}
+                whileTap={{ scale: 0.99 }}
+                onClick={() => setShowSettings(true)}
+                className="w-full py-3.5 bg-white/5 hover:bg-white/10 active:bg-white/15 text-[#d4af37] hover:text-amber-300 font-bold text-sm rounded-2xl border border-[#d4af37]/30 hover:border-amber-400/50 tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <span>⚙️</span>
+                <span>房间规则设定</span>
+              </motion.button>
+            </div>
+
+            <p className="mt-8 text-[11px] text-white/20 select-none">
+              房主授权 · 点击上方设定修改当前房间规则
+            </p>
+          </motion.div>
+        </div>
+      )}
+
       {/* Pregame Settings Modal - Rendered globally to avoid green felt size limits */}
       {gameState.phase === 'PREGAME' && showSettings && (
         <div className="fixed inset-0 z-[100] bg-black/95 flex items-center justify-center backdrop-blur-3xl p-4 sm:p-8 overflow-y-auto w-full h-full">
@@ -1149,12 +1250,20 @@ export const GameBoard: React.FC = () => {
                 </div>
               </div>
 
-              <button 
-                onClick={startDeal}
-                className="w-full bg-gold text-black font-black py-3.5 sm:py-4 rounded-2xl hover:bg-[#ffdf7e] transition-all shadow-[0_10px_30px_rgba(212,175,55,0.3)] mb-4 hover:scale-[1.01] active:scale-[0.99] cursor-pointer"
-              >
-                开始发牌
-              </button>
+              <div className="flex flex-col sm:flex-row gap-3 mb-4">
+                <button 
+                  onClick={() => setShowSettings(false)}
+                  className="flex-1 bg-white/5 text-[#d4af37] border border-[#d4af37]/30 hover:bg-white/10 active:bg-white/15 font-bold py-3.5 rounded-2xl transition-all cursor-pointer text-sm"
+                >
+                  确定并返回
+                </button>
+                <button 
+                  onClick={startDeal}
+                  className="flex-1 bg-gold text-black font-black py-3.5 rounded-2xl hover:bg-[#ffdf7e] transition-all shadow-[0_10px_30px_rgba(212,175,55,0.3)] hover:scale-[1.01] active:scale-[0.99] cursor-pointer text-sm"
+                >
+                  开始发牌
+                </button>
+              </div>
               <p className="text-[10px] text-center text-white/20">房主：我 (Player 0)</p>
            </motion.div>
         </div>
