@@ -8,8 +8,6 @@ This contains everything you need to run your app locally.
 
 View your app in AI Studio: https://ai.studio/apps/46c3a8aa-5ea5-4b33-a812-462bca89d162
 
-Play it: https://nanning-tractor-725872878360.asia-southeast1.run.app
-
 ## Run Locally
 
 **Prerequisites:**  Node.js

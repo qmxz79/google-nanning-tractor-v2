@@ -1208,15 +1208,20 @@ export const GameBoard: React.FC = () => {
                                {label} {isLeader && "★"}
                              </span>
                            </div>
-                           <div className="flex items-center justify-center flex-wrap gap-y-1 max-w-[140px] sm:max-w-[210px] md:max-w-[250px]">
+                           <div className={cn(
+                              "flex items-center justify-center",
+                              cards.length > 4 
+                                ? "flex-row" 
+                                : "flex-wrap gap-x-1 sm:gap-x-1.5 gap-y-1 sm:gap-y-1.5 max-w-[160px] sm:max-w-[280px] md:max-w-[340px] lg:max-w-[400px]"
+                            )}>
                              {cards.filter(Boolean).map((c, i) => (
                                 <div 
                                   key={c?.id || `${pos}-${i}`} 
                                   style={{ 
-                                    marginLeft: i === 0 ? 0 : 'var(--trick-card-ml)', 
-                                    zIndex: i 
+                                    zIndex: i,
+                                    marginLeft: cards.length > 4 && i > 0 ? 'var(--trick-card-overlap-ml)' : undefined
                                   }}
-                                  className="transition-all duration-150"
+                                  className="transition-all duration-150 transform hover:scale-105"
                                 >
                                    <PlayingCard 
                                      card={c} 
