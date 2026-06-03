@@ -1,0 +1,8 @@
+{
+  "name": "南宁四副牌拖拉机",
+  "description": "基于模块化四副牌引擎构建的南宁拖拉机纸牌游戏，支持0张/8张扣底、无王防守及手机浏览器自适应适配优化。",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
