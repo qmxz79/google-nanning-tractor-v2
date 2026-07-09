@@ -615,7 +615,7 @@ export const GameBoard: React.FC = () => {
   };
 
   const handleReplaceBottom = (selectedCards: CardType[]) => {
-    if (selectedCards.length !== gameState.settings.bottomCardCount) return;
+    if (selectedCards.length !== gameState.settings.bottomCardCount) return false;
     
     updateStateAndSync(prev => {
       const banker = prev.bankerPos;
@@ -634,6 +634,7 @@ export const GameBoard: React.FC = () => {
         message: "埋底完成，游戏开始！请出牌。"
       };
     });
+    return true;
   };
 
   // Helper for rendering opponent hands - Optimized for ultra-clean, non-blocking inline layout without absolute positioning
@@ -726,7 +727,7 @@ export const GameBoard: React.FC = () => {
 
   const handlePlay = (cards: CardType[]) => {
     const me = multiplayerMode === 'online' ? localPlayerIndex : 0;
-    if (gameState.phase !== 'PLAYING' || gameState.currentPlayer !== me) return;
+    if (gameState.phase !== 'PLAYING' || gameState.currentPlayer !== me) return false;
     
     // Check if player is leading a new trick:
     if (!gameState.currentTrick && cards.length > 1) {
@@ -738,7 +739,7 @@ export const GameBoard: React.FC = () => {
       });
       if (!allSame) {
         updateStateAndSync(prev => ({ ...prev, message: "首家出牌必须为同一花色的牌或同为主牌/副牌！" }));
-        return;
+        return false;
       }
     }
     
@@ -752,10 +753,11 @@ export const GameBoard: React.FC = () => {
 
     if (!NanningRules.isLegalPlay(cards, gameState.hands[me], leadPattern, leadSuit as any, gameState.trumpSuit, gameState.trumpLevel)) {
        updateStateAndSync(prev => ({ ...prev, message: "不符合跟牌或出牌规则！" }));
-       return;
+       return false;
     }
 
     handlePlayInternal(me, cards);
+    return true;
   };
 
   const me = multiplayerMode === 'online' ? localPlayerIndex : 0;

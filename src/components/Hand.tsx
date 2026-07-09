@@ -8,7 +8,7 @@ import { motion, AnimatePresence } from 'motion/react';
 interface HandProps {
   cards: CardType[];
   className?: string;
-  onPlay?: (selectedCards: CardType[]) => void;
+  onPlay?: (selectedCards: CardType[]) => boolean | void;
   isDealing?: boolean;
   possibleBids?: Bid[];
   onBid?: (bid: Bid) => void;
@@ -46,13 +46,7 @@ export const Hand: React.FC<HandProps> = ({ cards, className, onPlay, isDealing,
     if (!onHint) return;
     const recommended = onHint();
     if (recommended && recommended.length > 0) {
-      const next = new Set<string>();
-      recommended.forEach(c => {
-        if (c && c.id) {
-          next.add(c.id);
-        }
-      });
-      setSelectedIds(next);
+      setSelectedIds(new Set(recommended.slice(0, selectionLimit).map(c => c.id).filter(Boolean)));
     }
   };
 
@@ -67,30 +61,33 @@ export const Hand: React.FC<HandProps> = ({ cards, className, onPlay, isDealing,
     draggedIds: new Set(),
   });
 
-  const toggleSelect = (id: string | undefined) => {
-    if (!id) return;
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  const selectionLimit = requiredSelectionCount && requiredSelectionCount > 0 ? requiredSelectionCount : undefined;
+
+  const addSelected = (prev: Set<string>, id: string) => {
+    const next = new Set(prev);
+    if (next.has(id)) {
+      next.delete(id);
+    } else {
+      if (selectionLimit && next.size >= selectionLimit) {
+        next.delete(next.values().next().value);
+      }
+      next.add(id);
+    }
+    return next;
   };
 
+  const toggleSelect = (id: string | undefined) => {
+    if (!id || playDisabled) return;
+    setSelectedIds(prev => addSelected(prev, id));
+  }; 
+
   const handleTouchStart = (e: React.TouchEvent, cardId: string) => {
+    if (playDisabled) return;
     e.preventDefault(); // crucial to prevent simulated mouse click, tap lag, and page scrolling while dragging cards
     const isSelected = selectedIds.has(cardId);
     const originAction = isSelected ? 'deselect' : 'select';
 
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      if (next.has(cardId)) {
-        next.delete(cardId);
-      } else {
-        next.add(cardId);
-      }
-      return next;
-    });
+    setSelectedIds(prev => addSelected(prev, cardId));
 
     touchStartRef.current = {
       isDragging: true,
@@ -119,6 +116,9 @@ export const Hand: React.FC<HandProps> = ({ cards, className, onPlay, isDealing,
         setSelectedIds(prev => {
           const next = new Set(prev);
           if (targetAction === 'select') {
+            if (selectionLimit && next.size >= selectionLimit) {
+              next.delete(next.values().next().value);
+            }
             next.add(cardId);
           } else if (targetAction === 'deselect') {
             next.delete(cardId);
@@ -141,8 +141,8 @@ export const Hand: React.FC<HandProps> = ({ cards, className, onPlay, isDealing,
     if (playDisabled) return;
     if (onPlay && selectedIds.size > 0) {
       const selectedCards = safeCards.filter(c => selectedIds.has(c.id));
-      onPlay(selectedCards);
-      setSelectedIds(new Set()); // Reset after passing
+      const accepted = onPlay(selectedCards);
+      if (accepted !== false) setSelectedIds(new Set());
     }
   };
 
@@ -312,7 +312,8 @@ export const Hand: React.FC<HandProps> = ({ cards, className, onPlay, isDealing,
                       key={cardId} 
                       data-card-id={cardId}
                       className={cn(
-                        "relative shrink-0 transition-all duration-150 transform-gpu cursor-pointer",
+                        "relative shrink-0 transition-all duration-150 transform-gpu",
+                        playDisabled ? "cursor-not-allowed" : "cursor-pointer",
                         isHovered && "scale-[1.03] z-[500]"
                       )}
                       style={{ 
