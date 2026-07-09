@@ -20,10 +20,12 @@ interface Room {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT || 3000);
+  const BASE_PATH = process.env.BASE_PATH || '/nannong-tractor';
 
   const httpServer = createHttpServer(app);
   const io = new SocketIOServer(httpServer, {
+    path: `${BASE_PATH}/socket.io`,
     cors: {
       origin: "*",
       methods: ["GET", "POST"]
@@ -221,8 +223,9 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
+    app.use(BASE_PATH, express.static(distPath));
+    app.get(BASE_PATH, (req, res) => res.redirect(`${BASE_PATH}/`));
+    app.get(`${BASE_PATH}/*`, (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

@@ -112,6 +112,7 @@ export const MultiplayerLobby: React.FC<MultiplayerLobbyProps> = ({ onJoinSucces
     // Dynamic origin selection
     const socketUrl = window.location.origin;
     const socketInstance = io(socketUrl, {
+      path: `${import.meta.env.BASE_URL}socket.io`,
       transports: ['websocket', 'polling']
     });
 
