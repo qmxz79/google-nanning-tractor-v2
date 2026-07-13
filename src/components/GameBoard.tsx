@@ -9,6 +9,20 @@ import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { MultiplayerLobby } from './MultiplayerLobby';
 
+const boostDealForPlayer = (deck: CardType[], player: PlayerPosition, bottomCount: number, level: Rank) => {
+  const limit = deck.length - bottomCount;
+  const score = (c: CardType) => NanningRules.getCardWeight(c, null, level) + NanningRules.calculatePoints([c]) * 3;
+  const mine = Array.from({ length: limit }, (_, i) => i).filter(i => i % 4 === player).sort((a, b) => score(deck[a]) - score(deck[b]));
+  const others = Array.from({ length: limit }, (_, i) => i).filter(i => i % 4 !== player).sort((a, b) => score(deck[b]) - score(deck[a]));
+
+  // ponytail: entertainment bias, not fair ranked multiplayer dealing.
+  for (let i = 0; i < Math.min(10, mine.length, others.length); i++) {
+    if (score(deck[others[i]]) <= score(deck[mine[i]])) break;
+    [deck[mine[i]], deck[others[i]]] = [deck[others[i]], deck[mine[i]]];
+  }
+  return deck;
+};
+
 export const GameBoard: React.FC = () => {
   // Online Multiplayer State
   const [multiplayerMode, setMultiplayerMode] = useState<'offline' | 'online' | null>(null);
@@ -167,7 +181,10 @@ export const GameBoard: React.FC = () => {
     setShowSettings(false);
 
     const currentBottomCardCount = gameState.settings.bottomCardCount;
-    const fullDeck = engine.createDeck();
+    const me = multiplayerMode === 'online' ? localPlayerIndex : 0;
+    const fullDeck = multiplayerMode === 'offline'
+      ? boostDealForPlayer(engine.createDeck(), me, currentBottomCardCount, gameState.trumpLevel)
+      : engine.createDeck();
     const bottomCards = fullDeck.slice(fullDeck.length - currentBottomCardCount);
 
     updateStateAndSync(prev => ({ 
