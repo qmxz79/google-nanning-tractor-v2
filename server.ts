@@ -21,7 +21,7 @@ interface Room {
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT || 3000);
-  const BASE_PATH = process.env.BASE_PATH || '/nannong-tractor';
+  const BASE_PATH = process.env.BASE_PATH || '/nanning-tractor';
 
   const httpServer = createHttpServer(app);
   const io = new SocketIOServer(httpServer, {
