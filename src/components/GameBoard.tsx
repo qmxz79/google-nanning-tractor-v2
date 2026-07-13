@@ -9,18 +9,59 @@ import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { MultiplayerLobby } from './MultiplayerLobby';
 
-const boostDealForPlayer = (deck: CardType[], player: PlayerPosition, bottomCount: number, level: Rank) => {
-  const limit = deck.length - bottomCount;
-  const score = (c: CardType) => NanningRules.getCardWeight(c, null, level) + NanningRules.calculatePoints([c]) * 3;
-  const mine = Array.from({ length: limit }, (_, i) => i).filter(i => i % 4 === player).sort((a, b) => score(deck[a]) - score(deck[b]));
-  const others = Array.from({ length: limit }, (_, i) => i).filter(i => i % 4 !== player).sort((a, b) => score(deck[b]) - score(deck[a]));
+const makeComboFriendlyDeck = (deck: CardType[], bottomCount: number) => {
+  const playerCount = 4;
+  const dealCount = deck.length - bottomCount;
+  const target = Math.floor(dealCount / playerCount);
+  const hands: CardType[][] = [[], [], [], []];
+  const bottom = deck.slice(dealCount);
+  const groups = new Map<string, CardType[]>();
 
-  // ponytail: entertainment bias, not fair ranked multiplayer dealing.
-  for (let i = 0; i < Math.min(10, mine.length, others.length); i++) {
-    if (score(deck[others[i]]) <= score(deck[mine[i]])) break;
-    [deck[mine[i]], deck[others[i]]] = [deck[others[i]], deck[mine[i]]];
+  for (const card of deck.slice(0, dealCount)) {
+    const key = `${card.suit}-${card.rank}`;
+    groups.set(key, [...(groups.get(key) || []), card]);
   }
-  return deck;
+
+  const takePlayer = (size: number) => {
+    const candidates = hands.map((h, i) => ({ i, room: target - h.length })).filter(x => x.room >= size);
+    const pool = candidates.length ? candidates : hands.map((h, i) => ({ i, room: target - h.length }));
+    pool.sort((a, b) => b.room - a.room || Math.random() - 0.5);
+    return pool[0].i;
+  };
+
+  const addChunk = (cards: CardType[]) => {
+    if (!cards.length) return;
+    if (!hands.some(h => target - h.length >= cards.length) && cards.length > 1) {
+      cards.forEach(card => addChunk([card]));
+      return;
+    }
+    hands[takePlayer(cards.length)].push(...cards);
+  };
+
+  // ponytail: fair entertainment shuffle; bundles nearby duplicates so everyone gets more pairs/tractors.
+  const ranks: CardType['rank'][] = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+  for (const suit of ['spade', 'heart', 'club', 'diamond'] as const) {
+    for (let i = 0; i < ranks.length - 1; i += 2) {
+      const a = groups.get(`${suit}-${ranks[i]}`) || [];
+      const b = groups.get(`${suit}-${ranks[i + 1]}`) || [];
+      if (a.length >= 2 && b.length >= 2 && Math.random() < 0.55) {
+        addChunk([...a.splice(0, 2), ...b.splice(0, 2)]);
+      }
+    }
+  }
+
+  Array.from(groups.values()).sort(() => Math.random() - 0.5).forEach(group => {
+    while (group.length) addChunk(group.splice(0, group.length >= 3 && Math.random() < 0.35 ? 3 : Math.min(2, group.length)));
+  });
+
+  const rebuilt: CardType[] = [];
+  for (let i = 0; i < target; i++) {
+    for (let p = 0; p < playerCount; p++) {
+      const card = hands[p][i];
+      if (card) rebuilt.push(card);
+    }
+  }
+  return [...rebuilt, ...bottom];
 };
 
 export const GameBoard: React.FC = () => {
@@ -181,10 +222,7 @@ export const GameBoard: React.FC = () => {
     setShowSettings(false);
 
     const currentBottomCardCount = gameState.settings.bottomCardCount;
-    const me = multiplayerMode === 'online' ? localPlayerIndex : 0;
-    const fullDeck = multiplayerMode === 'offline'
-      ? boostDealForPlayer(engine.createDeck(), me, currentBottomCardCount, gameState.trumpLevel)
-      : engine.createDeck();
+    const fullDeck = makeComboFriendlyDeck(engine.createDeck(), currentBottomCardCount);
     const bottomCards = fullDeck.slice(fullDeck.length - currentBottomCardCount);
 
     updateStateAndSync(prev => ({ 
