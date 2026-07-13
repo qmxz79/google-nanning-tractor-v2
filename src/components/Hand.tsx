@@ -36,7 +36,6 @@ export const Hand: React.FC<HandProps> = ({ cards, className, onPlay, isDealing,
   }, [cards]);
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
 
   React.useEffect(() => {
     setSelectedIds(new Set());
@@ -290,7 +289,6 @@ export const Hand: React.FC<HandProps> = ({ cards, className, onPlay, isDealing,
                  const cardId = card?.id;
                  if (!cardId) return null;
                  const isSelected = selectedIds.has(cardId);
-                 const isHovered = hoveredId === cardId;
                  const isTrump = NanningRules.isTrump(card, trumpSuit, trumpLevel);
                  
                  // Dynamic hand layout spacing calculation to prevent clumping
@@ -313,17 +311,14 @@ export const Hand: React.FC<HandProps> = ({ cards, className, onPlay, isDealing,
                       data-card-id={cardId}
                       className={cn(
                         "relative shrink-0 transition-all duration-150 transform-gpu",
-                        playDisabled ? "cursor-not-allowed" : "cursor-pointer",
-                        isHovered && "scale-[1.03] z-[500]"
+                        playDisabled ? "cursor-not-allowed" : "cursor-pointer"
                       )}
                       style={{ 
-                        zIndex: isHovered ? 500 : (isSelected ? 200 + index : index),
+                        zIndex: isSelected ? 200 + index : index,
                         marginLeft: marginValue,
                         width: cardWidth,
                         height: cardHeight
                       }}
-                      onMouseEnter={() => setHoveredId(cardId)}
-                      onMouseLeave={() => setHoveredId(null)}
                       onTouchStart={(e) => handleTouchStart(e, cardId)}
                       onClick={() => toggleSelect(cardId)}
                    >

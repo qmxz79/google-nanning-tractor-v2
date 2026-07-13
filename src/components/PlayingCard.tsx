@@ -64,7 +64,6 @@ export const PlayingCard: React.FC<PlayingCardProps> = ({ card, hidden, isSelect
       onClick={onClick}
       initial={{ y: 0 }}
       animate={{ y: isSelected ? -6 : 0 }}
-      whileHover={{ y: isSelected ? -6 : -3 }}
       className={cn(
         "relative w-12 h-18 sm:w-16 sm:h-24 md:w-20 md:h-28 landscape:w-10 landscape:h-14 sm:landscape:w-12 sm:landscape:h-16 md:landscape:w-14 md:landscape:h-20 font-sans",
         "bg-[#e0d8cc] rounded-lg shadow-2xl flex flex-col select-none cursor-pointer transform-gpu transition-all",
